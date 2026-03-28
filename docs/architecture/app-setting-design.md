@@ -59,7 +59,7 @@ src/one_dragon_qt/
 
 **文件**：`one_dragon/utils/plugin_module_loader.py`
 
-从 `ApplicationFactoryManager` 和 `AppSettingScanner` 中提取的共享逻辑：
+从 `ApplicationFactoryManager` 和 `AppSettingManager` 中提取的共享逻辑：
 
 | 函数 | 职责 |
 |------|------|
@@ -234,4 +234,4 @@ plugins/my_plugin/
     my_plugin_const.py              # 常量定义（已有模式）
 ```
 
-无需修改任何框架代码。扫描器会自动在 `THIRD_PARTY` 插件目录中发现并加载。
+无需修改任何框架代码。`AppSettingManager` 会自动在 `THIRD_PARTY` 插件目录中发现并加载。
