@@ -10,6 +10,7 @@ from one_dragon.base.screen.screen_area import ScreenArea
 class ScreenInfo:
 
     def __init__(self, data: dict[str, Any]):
+        self._loaded_app_id: str | None = None
         self.old_screen_id: str = data.get('screen_id', '')  # 旧的画面ID 用于保存时删掉旧文件
         self.screen_id: str = data.get('screen_id', '')  # 画面ID 用于加载文件
         self.screen_name: str = data.get('screen_name', '')  # 画面名称 用于显示

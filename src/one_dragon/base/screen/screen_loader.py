@@ -60,11 +60,29 @@ class ScreenContext:
         return os_utils.get_path_under_work_dir('assets', 'game_data', 'screen_info')
 
     @property
+    def global_screen_dir(self) -> str:
+        """全局画面目录"""
+        return os.path.join(self.yml_file_dir, '_global')
+
+    def get_app_screen_dir(self, app_id: str) -> str:
+        """获取应用专属画面目录"""
+        return os.path.join(self.yml_file_dir, app_id)
+
+    def _get_screen_dir(self, app_id: str | None = None) -> str:
+        """根据 app_id 获取画面文件存放目录"""
+        if app_id is None or app_id == '_global':
+            return self.global_screen_dir
+        else:
+            return self.get_app_screen_dir(app_id)
+
+    @property
     def merge_yml_file_path(self) -> str:
         return os.path.join(self.yml_file_dir, '_od_merged.yml')
 
-    def get_yml_file_path(self, screen_id: str) -> str:
-        return os.path.join(self.yml_file_dir, f'{screen_id}.yml')
+    def get_yml_file_path(self, screen_id: str, app_id: str | None = None) -> str:
+        """获取画面文件路径"""
+        screen_dir = self._get_screen_dir(app_id)
+        return os.path.join(screen_dir, f'{screen_id}.yml')
 
     def reload(self, from_memory: bool = False, from_separated_files: bool = False) -> None:
         """
@@ -72,7 +90,7 @@ class ScreenContext:
 
         Args:
             from_memory: 是否从内存中加载 管理画面修改的是 self._id_2_screen 修改后从这里更新其它内存值
-            from_separated_files: 是否从单独文件加载
+            from_separated_files: 是否从单独文件加载（新目录结构）
         """
         self.screen_info_list.clear()
         self.screen_info_map.clear()
@@ -86,50 +104,89 @@ class ScreenContext:
                 for screen_area in screen_info.area_list:
                     self._screen_area_map[f'{screen_info.screen_name}.{screen_area.area_name}'] = screen_area
         elif from_separated_files:
-            self._id_2_screen.clear()
-            for file_name in os.listdir(self.yml_file_dir):
-                if not file_name.endswith('.yml'):
-                    continue
-                if file_name == '_od_merged.yml':
-                    continue
-                file_path = os.path.join(self.yml_file_dir, file_name)
-                with open(file_path, 'r', encoding='utf-8') as file:
-                    log.debug(f"加载yaml: {file_path}")
-                    data = yaml_utils.safe_load(file)
-                if not isinstance(data, dict):
-                    log.warning(f"画面配置格式错误，已跳过: {file_path}")
-                    continue
-
-                screen_info = ScreenInfo(data)
-                self.screen_info_list.append(screen_info)
-                self.screen_info_map[screen_info.screen_name] = screen_info
-                self._id_2_screen[screen_info.screen_id] = screen_info
-
-                for screen_area in screen_info.area_list:
-                    self._screen_area_map[f'{screen_info.screen_name}.{screen_area.area_name}'] = screen_area
+            self._load_from_new_structure()
         else:
-            self._id_2_screen.clear()
-            file_path = self.merge_yml_file_path
-            with open(file_path, 'r', encoding='utf-8') as file:
-                log.debug(f"加载yaml: {file_path}")
-                yaml_data = yaml_utils.safe_load(file)
-            if not isinstance(yaml_data, list):
-                if yaml_data is not None:
-                    log.warning(f"合并画面配置格式错误，已忽略: {file_path}")
-                yaml_data = []
-            for data in yaml_data:
-                if not isinstance(data, dict):
-                    log.warning(f"合并画面配置中存在非字典条目，已跳过: {file_path}")
-                    continue
-                screen_info = ScreenInfo(data)
-                self.screen_info_list.append(screen_info)
-                self.screen_info_map[screen_info.screen_name] = screen_info
-                self._id_2_screen[screen_info.screen_id] = screen_info
-
-                for screen_area in screen_info.area_list:
-                    self._screen_area_map[f'{screen_info.screen_name}.{screen_area.area_name}'] = screen_area
+            self._load_from_legacy_merged_file()
 
         self.init_screen_route()
+
+    def _load_from_new_structure(self) -> None:
+        """从新目录结构加载：_global/ + {app_id}/"""
+        self._id_2_screen.clear()
+
+        # 1. 加载全局画面目录
+        if os.path.exists(self.global_screen_dir):
+            self._load_screens_from_dir(self.global_screen_dir, app_id='_global')
+
+        # 2. 遍历所有应用子目录
+        for item in os.listdir(self.yml_file_dir):
+            item_path = os.path.join(self.yml_file_dir, item)
+            if not os.path.isdir(item_path):
+                continue
+            if item == '_global':
+                continue
+            # 跳过空目录
+            if not os.listdir(item_path):
+                log.debug(f"跳过空目录: {item_path}")
+                continue
+            self._load_screens_from_dir(item_path, app_id=item)
+
+    def _load_screens_from_dir(self, directory: str, app_id: str) -> None:
+        """从指定目录加载所有 yml 文件"""
+        if not os.path.exists(directory):
+            return
+
+        for file_name in os.listdir(directory):
+            if not file_name.endswith('.yml'):
+                continue
+            file_path = os.path.join(directory, file_name)
+            with open(file_path, 'r', encoding='utf-8') as file:
+                log.debug(f"加载yaml: {file_path}")
+                data = yaml_utils.safe_load(file)
+
+            if not isinstance(data, dict):
+                log.warning(f"画面配置格式错误，已跳过: {file_path}")
+                continue
+
+            screen_info = ScreenInfo(data)
+            # 记录来源 app_id（用于后续保存）
+            screen_info._loaded_app_id = app_id
+
+            self.screen_info_list.append(screen_info)
+            self.screen_info_map[screen_info.screen_name] = screen_info
+            self._id_2_screen[screen_info.screen_id] = screen_info
+
+            for screen_area in screen_info.area_list:
+                self._screen_area_map[f'{screen_info.screen_name}.{screen_area.area_name}'] = screen_area
+
+    def _load_from_legacy_merged_file(self) -> None:
+        """从旧的合并文件加载（兼容旧版）"""
+        self._id_2_screen.clear()
+        file_path = self.merge_yml_file_path
+        if not os.path.exists(file_path):
+            log.warning(f"合并配置文件不存在: {file_path}")
+            return
+
+        with open(file_path, 'r', encoding='utf-8') as file:
+            log.debug(f"加载yaml: {file_path}")
+            yaml_data = yaml_utils.safe_load(file)
+
+        if not isinstance(yaml_data, list):
+            if yaml_data is not None:
+                log.warning(f"合并画面配置格式错误，已忽略: {file_path}")
+            yaml_data = []
+
+        for data in yaml_data:
+            if not isinstance(data, dict):
+                log.warning(f"合并画面配置中存在非字典条目，已跳过: {file_path}")
+                continue
+            screen_info = ScreenInfo(data)
+            self.screen_info_list.append(screen_info)
+            self.screen_info_map[screen_info.screen_name] = screen_info
+            self._id_2_screen[screen_info.screen_id] = screen_info
+
+            for screen_area in screen_info.area_list:
+                self._screen_area_map[f'{screen_info.screen_name}.{screen_area.area_name}'] = screen_area
 
     def get_screen(self, screen_name: str, copy: bool = False) -> ScreenInfo:
         """
@@ -159,57 +216,74 @@ class ScreenContext:
         key = f'{screen_name}.{area_name}'
         return self._screen_area_map.get(key, None)
 
-    def save_screen(self, screen_info: ScreenInfo) -> None:
+    def save_screen(self, screen_info: ScreenInfo, app_id: str | None = None) -> None:
         """
         保存画面
 
         Args:
             screen_info: 画面信息
+            app_id: 应用ID（用于决定保存目录，None 时保存到 _global）
         """
         if screen_info.old_screen_id != screen_info.screen_id:
-            self.delete_screen(screen_info.old_screen_id, save=False)
+            # 如果 screen_id 改变，需要删除旧文件
+            old_app_id = getattr(screen_info, '_loaded_app_id', app_id)
+            self.delete_screen(screen_info.old_screen_id, app_id=old_app_id, save=False)
         self._id_2_screen[screen_info.screen_id] = screen_info
-        self.save(screen_id=screen_info.screen_id)
+        # 记录 app_id 以便下次保存
+        screen_info._loaded_app_id = app_id
+        self.save(screen_id=screen_info.screen_id, app_id=app_id)
 
-    def delete_screen(self, screen_id: str, save: bool = True) -> None:
+    def delete_screen(self, screen_id: str, app_id: str | None = None, save: bool = True) -> None:
         """
         删除一个画面
         Args:
             screen_id: 画面ID
+            app_id: 应用ID（用于决定删除哪个目录下的文件）
             save: 是否触发保存
         """
         if screen_id in self._id_2_screen:
+            screen_info = self._id_2_screen[screen_id]
+            # 优先使用传入的 app_id，其次使用画面记录的 app_id
+            actual_app_id = app_id or getattr(screen_info, '_loaded_app_id', None)
             del self._id_2_screen[screen_id]
 
-            file_path = self.get_yml_file_path(screen_id)
+            file_path = self.get_yml_file_path(screen_id, app_id=actual_app_id)
             if os.path.exists(file_path):
                 os.remove(file_path)
 
         if save:
-            self.save(screen_id=screen_id)
+            self.save(screen_id=screen_id, app_id=app_id)
         else:
             self.reload(from_memory=True)
 
-    def save(self, screen_id: str | None = None, reload_after_save: bool = True) -> None:
+    def save(self, screen_id: str | None = None,
+             app_id: str | None = None,
+             reload_after_save: bool = True) -> None:
         """
         保存到文件
 
         Args:
             screen_id: 画面ID
+            app_id: 应用ID（用于决定保存目录，None 时保存到 _global）
             reload_after_save: 保存后是否重新加载
         """
         all_data = []
 
-        # 保存到单个文件
+        # 保存到分离文件（新目录结构）
         for screen_info in self._id_2_screen.values():
             data = screen_info.to_dict()
             all_data.append(data)
 
             if screen_id is not None and screen_id == screen_info.screen_id:
-                with open(self.get_yml_file_path(screen_id), 'w', encoding='utf-8') as file:
+                # 确定保存到哪个目录
+                target_app_id = app_id or getattr(screen_info, '_loaded_app_id', None)
+                target_dir = self._get_screen_dir(target_app_id)
+                os.makedirs(target_dir, exist_ok=True)
+                file_path = os.path.join(target_dir, f'{screen_id}.yml')
+                with open(file_path, 'w', encoding='utf-8') as file:
                     yaml.safe_dump(data, file, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
-        # 保存到合并文件
+        # 保存到合并文件（兼容旧版）
         with open(self.merge_yml_file_path, 'w', encoding='utf-8') as file:
             yaml.safe_dump(all_data, file, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
