@@ -32,7 +32,7 @@ from one_dragon.base.operation.one_dragon_env_context import (
     OneDragonEnvContext,
 )
 from one_dragon.base.push.push_service import PushService
-from one_dragon.base.screen.screen_loader import ScreenContext
+from one_dragon.base.screen.screen_context import ScreenContext
 from one_dragon.base.screen.template_loader import TemplateLoader
 from one_dragon.utils import debug_utils, file_utils, i18_utils, log_utils, thread_utils
 from one_dragon.utils.log_utils import log
@@ -251,7 +251,7 @@ class OneDragonContext(ContextEventBus, OneDragonEnvContext):
 
             self.init_ocr()
 
-            self.screen_loader.reload(from_separated_files=True)
+            self.screen_loader.reload()
 
             # 账号实例层级的配置 不是应用特有的配置
             self.reload_instance_config()

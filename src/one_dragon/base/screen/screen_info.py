@@ -12,7 +12,7 @@ class ScreenInfo:
     def __init__(self, data: dict[str, Any]):
         self._loaded_app_id: str | None = None
         self._namespace: str | None = None  # 命名空间（应用ID）
-        self._original_screen_name: str | None = None  # 原始画面名称（不带命名空间）
+        self.original_screen_name: str | None = None  # 原始画面名称（不带命名空间）
 
         self.old_screen_id: str = data.get('screen_id', '')
         self.screen_id: str = data.get('screen_id', '')
@@ -24,7 +24,7 @@ class ScreenInfo:
             parts = raw_screen_name.split('.', 1)
             if len(parts) == 2:
                 self._namespace = parts[0]
-                self._original_screen_name = parts[1]
+                self.original_screen_name = parts[1]
                 self.screen_name = raw_screen_name  # 保持完整名称
             else:
                 self.screen_name = raw_screen_name
@@ -107,7 +107,7 @@ class ScreenInfo:
             original_name: 原始画面名称（不带命名空间）
         """
         self._namespace = namespace
-        self._original_screen_name = original_name
+        self.original_screen_name = original_name
         if namespace != '_global':
             self.screen_name = f"{namespace}.{original_name}"
         else:
@@ -116,8 +116,8 @@ class ScreenInfo:
     @property
     def display_name(self) -> str:
         """获取显示名称（不带命名空间，用于 UI 展示）"""
-        if self._original_screen_name:
-            return self._original_screen_name
+        if self.original_screen_name:
+            return self.original_screen_name
         # 如果存储的是带命名空间的，尝试解析
         if '.' in self.screen_name:
             parts = self.screen_name.split('.', 1)
@@ -137,8 +137,8 @@ class ScreenInfo:
         data: dict[str, Any] = {'screen_id': self.screen_id}
 
         # 保存时使用原始画面名称
-        if self._original_screen_name:
-            data['screen_name'] = self._original_screen_name
+        if self.original_screen_name:
+            data['screen_name'] = self.original_screen_name
         else:
             # 兼容旧数据：如果 screen_name 带命名空间，尝试去掉
             if '.' in self.screen_name:
@@ -160,4 +160,4 @@ class ScreenInfo:
         return None
 
     def __repr__(self) -> str:
-        return f"ScreenInfo(screen_name={self.screen_name}, namespace={self._namespace}, original={self._original_screen_name})"
+        return f"ScreenInfo(screen_name={self.screen_name}, namespace={self._namespace}, original={self.original_screen_name})"
