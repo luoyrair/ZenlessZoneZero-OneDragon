@@ -53,6 +53,7 @@ class RandomPlayApp(ZApplication):
         执行前的初始化 由子类实现
         注意初始化要全面 方便一个指令重复使用
         """
+        super().handle_init()
         self._all_video_themes: list[str] = [
             '纪实', '怀旧', '冒险', '幻想', '喜剧', '动作', '惊悚', '悬疑',
             '访谈', '都市', '时尚', '灾难', '悲剧', '亲情', '广告', '爱情',

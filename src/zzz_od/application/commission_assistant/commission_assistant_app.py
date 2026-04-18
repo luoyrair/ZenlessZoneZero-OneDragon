@@ -53,6 +53,7 @@ class CommissionAssistantApp(ZApplication):
         self.fishing_done: bool = False  # 钓鱼是否结束 通常是比赛类 最后会有挑战结果显示
 
     def handle_init(self):
+        super().handle_init()
         self._listen_btn()
 
     def _unlisten_btn(self) -> None:

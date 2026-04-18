@@ -40,7 +40,7 @@ class RedemptionCodeApp(ZApplication):
         执行前的初始化 由子类实现
         注意初始化要全面 方便一个指令重复使用
         """
-        pass
+        super().handle_init()
 
     @operation_node(name='检测新兑换码', is_start_node=True)
     def check_new_code(self) -> OperationRoundResult:

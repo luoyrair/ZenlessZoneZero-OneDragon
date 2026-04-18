@@ -46,14 +46,22 @@ class ScreenRoute:
 class ScreenContext:
 
     def __init__(self):
+        # 当前加载的应用ID
+        self._current_app_id: str | None = None
+
+        # 画面数据存储（带命名空间）
         self.screen_info_list: list[ScreenInfo] = []
         self.screen_info_map: dict[str, ScreenInfo] = {}
         self._screen_area_map: dict[str, ScreenArea] = {}
         self._id_2_screen: dict[str, ScreenInfo] = {}
-        self.screen_route_map: dict[str, dict[str, ScreenRoute]] = {}
 
-        self.last_screen_name: Optional[str] = None  # 上一个画面名字
-        self.current_screen_name: Optional[str] = None  # 当前的画面名字
+        # 路径图（分离存储）
+        self._global_route_map: dict[str, dict[str, ScreenRoute]] = {}
+        self._app_route_maps: dict[str, dict[str, dict[str, ScreenRoute]]] = {}
+
+        # 当前画面状态
+        self.last_screen_name: Optional[str] = None
+        self.current_screen_name: Optional[str] = None
 
     @property
     def yml_file_dir(self) -> str:
@@ -84,13 +92,18 @@ class ScreenContext:
         screen_dir = self._get_screen_dir(app_id)
         return os.path.join(screen_dir, f'{screen_id}.yml')
 
-    def reload(self, from_memory: bool = False, from_separated_files: bool = False) -> None:
+    @property
+    def current_app_id(self) -> str | None:
+        return self._current_app_id
+
+    def reload(self, from_memory: bool = False, from_separated_files: bool = False, app_id: str | None = None) -> None:
         """
         重新加载配置文件
 
         Args:
-            from_memory: 是否从内存中加载 管理画面修改的是 self._id_2_screen 修改后从这里更新其它内存值
-            from_separated_files: 是否从单独文件加载（新目录结构）
+            from_memory: 是否从内存中加载
+            from_separated_files: 是否从新目录结构加载
+            app_id: 指定应用ID，为 None 时只加载 _global
         """
         self.screen_info_list.clear()
         self.screen_info_map.clear()
@@ -100,36 +113,31 @@ class ScreenContext:
             for screen_info in self._id_2_screen.values():
                 self.screen_info_list.append(screen_info)
                 self.screen_info_map[screen_info.screen_name] = screen_info
-
                 for screen_area in screen_info.area_list:
                     self._screen_area_map[f'{screen_info.screen_name}.{screen_area.area_name}'] = screen_area
         elif from_separated_files:
-            self._load_from_new_structure()
+            self._current_app_id = app_id
+            self._load_for_app(app_id)
         else:
             self._load_from_legacy_merged_file()
 
+        if app_id is None:
+            log.info(f"加载了 {len(self.screen_info_list)} 个画面，{len(self._screen_area_map)} 个区域")
         self.init_screen_route()
 
-    def _load_from_new_structure(self) -> None:
-        """从新目录结构加载：_global/ + {app_id}/"""
+    def _load_for_app(self, app_id: str | None = None) -> None:
+        """按应用加载画面配置"""
         self._id_2_screen.clear()
 
-        # 1. 加载全局画面目录
+        # 1. 始终加载全局画面
         if os.path.exists(self.global_screen_dir):
             self._load_screens_from_dir(self.global_screen_dir, app_id='_global')
 
-        # 2. 遍历所有应用子目录
-        for item in os.listdir(self.yml_file_dir):
-            item_path = os.path.join(self.yml_file_dir, item)
-            if not os.path.isdir(item_path):
-                continue
-            if item == '_global':
-                continue
-            # 跳过空目录
-            if not os.listdir(item_path):
-                log.debug(f"跳过空目录: {item_path}")
-                continue
-            self._load_screens_from_dir(item_path, app_id=item)
+        # 2. 加载指定应用的专属画面
+        if app_id is not None:
+            app_dir = self.get_app_screen_dir(app_id)
+            if os.path.exists(app_dir):
+                self._load_screens_from_dir(app_dir, app_id=app_id)
 
     def _load_screens_from_dir(self, directory: str, app_id: str) -> None:
         """从指定目录加载所有 yml 文件"""
@@ -149,7 +157,14 @@ class ScreenContext:
                 continue
 
             screen_info = ScreenInfo(data)
-            # 记录来源 app_id（用于后续保存）
+
+            # 设置命名空间
+            original_name = data.get('screen_name', '')
+            if app_id != '_global':
+                screen_info.set_namespace(app_id, original_name)
+            else:
+                screen_info.set_namespace('_global', original_name)
+
             screen_info._loaded_app_id = app_id
 
             self.screen_info_list.append(screen_info)
@@ -181,69 +196,66 @@ class ScreenContext:
                 log.warning(f"合并画面配置中存在非字典条目，已跳过: {file_path}")
                 continue
             screen_info = ScreenInfo(data)
+            screen_info._namespace = '_legacy'
             self.screen_info_list.append(screen_info)
             self.screen_info_map[screen_info.screen_name] = screen_info
             self._id_2_screen[screen_info.screen_id] = screen_info
-
             for screen_area in screen_info.area_list:
                 self._screen_area_map[f'{screen_info.screen_name}.{screen_area.area_name}'] = screen_area
 
-    def get_screen(self, screen_name: str, copy: bool = False) -> ScreenInfo:
-        """
-        获取某个画面
+    def get_screen(self, screen_name: str, copy: bool = False, app_id: str | None = None) -> ScreenInfo:
+        """获取某个画面"""
+        # 构建查找列表
+        to_try = [screen_name]
 
-        Args:
-            screen_name: 画面名称
-            copy: 是否复制 用于管理界面临时修改使用
+        # 如果提供了 app_id，尝试加前缀
+        if app_id and app_id != '_global':
+            to_try.append(f"{app_id}.{screen_name}")
 
-        Returns:
-            ScreenInfo 画面信息
-        """
-        key = screen_name
-        screen = self.screen_info_map.get(key, None)
-        if screen is None:
-            raise Exception(f"未找到画面: {screen_name}")
-        if copy:
-            return ScreenInfo(screen.to_dict())
-        else:
-            return screen
+        # 如果有当前 app_id 且与传入的不同，也尝试
+        if self._current_app_id and self._current_app_id != '_global' and self._current_app_id != app_id:
+            to_try.append(f"{self._current_app_id}.{screen_name}")
 
-    def get_area(self, screen_name: str, area_name: str) -> ScreenArea:
-        """
-        获取某个区域的信息
-        :return:
-        """
-        key = f'{screen_name}.{area_name}'
-        return self._screen_area_map.get(key, None)
+        # 尝试查找
+        for key in to_try:
+            screen = self.screen_info_map.get(key, None)
+            if screen is not None:
+                if copy:
+                    return ScreenInfo(screen.to_dict())
+                return screen
+
+        raise Exception(f"未找到画面: {screen_name}")
+
+    def get_area(self, screen_name: str, area_name: str, app_id: str | None = None) -> ScreenArea:
+        """获取某个区域的信息"""
+        to_try = [f'{screen_name}.{area_name}']
+
+        if app_id and app_id != '_global':
+            to_try.append(f"{app_id}.{screen_name}.{area_name}")
+
+        if self._current_app_id and self._current_app_id != '_global' and self._current_app_id != app_id:
+            to_try.append(f"{self._current_app_id}.{screen_name}.{area_name}")
+
+        for key in to_try:
+            area = self._screen_area_map.get(key, None)
+            if area is not None:
+                return area
+
+        return None
 
     def save_screen(self, screen_info: ScreenInfo, app_id: str | None = None) -> None:
-        """
-        保存画面
-
-        Args:
-            screen_info: 画面信息
-            app_id: 应用ID（用于决定保存目录，None 时保存到 _global）
-        """
+        """保存画面"""
         if screen_info.old_screen_id != screen_info.screen_id:
-            # 如果 screen_id 改变，需要删除旧文件
             old_app_id = getattr(screen_info, '_loaded_app_id', app_id)
             self.delete_screen(screen_info.old_screen_id, app_id=old_app_id, save=False)
         self._id_2_screen[screen_info.screen_id] = screen_info
-        # 记录 app_id 以便下次保存
         screen_info._loaded_app_id = app_id
         self.save(screen_id=screen_info.screen_id, app_id=app_id)
 
     def delete_screen(self, screen_id: str, app_id: str | None = None, save: bool = True) -> None:
-        """
-        删除一个画面
-        Args:
-            screen_id: 画面ID
-            app_id: 应用ID（用于决定删除哪个目录下的文件）
-            save: 是否触发保存
-        """
+        """删除一个画面"""
         if screen_id in self._id_2_screen:
             screen_info = self._id_2_screen[screen_id]
-            # 优先使用传入的 app_id，其次使用画面记录的 app_id
             actual_app_id = app_id or getattr(screen_info, '_loaded_app_id', None)
             del self._id_2_screen[screen_id]
 
@@ -256,34 +268,30 @@ class ScreenContext:
         else:
             self.reload(from_memory=True)
 
-    def save(self, screen_id: str | None = None,
-             app_id: str | None = None,
-             reload_after_save: bool = True) -> None:
-        """
-        保存到文件
-
-        Args:
-            screen_id: 画面ID
-            app_id: 应用ID（用于决定保存目录，None 时保存到 _global）
-            reload_after_save: 保存后是否重新加载
-        """
+    def save(self, screen_id: str | None = None, app_id: str | None = None, reload_after_save: bool = True) -> None:
+        """保存到文件"""
         all_data = []
 
-        # 保存到分离文件（新目录结构）
         for screen_info in self._id_2_screen.values():
             data = screen_info.to_dict()
+
+            # 保存时恢复原始名称
+            if hasattr(screen_info, '_original_screen_name'):
+                data['screen_name'] = screen_info._original_screen_name
+
             all_data.append(data)
 
             if screen_id is not None and screen_id == screen_info.screen_id:
-                # 确定保存到哪个目录
                 target_app_id = app_id or getattr(screen_info, '_loaded_app_id', None)
                 target_dir = self._get_screen_dir(target_app_id)
                 os.makedirs(target_dir, exist_ok=True)
-                file_path = os.path.join(target_dir, f'{screen_id}.yml')
+
+                file_name = screen_info._original_screen_name if hasattr(screen_info,
+                                                                         '_original_screen_name') else screen_id
+                file_path = os.path.join(target_dir, f'{file_name}.yml')
                 with open(file_path, 'w', encoding='utf-8') as file:
                     yaml.safe_dump(data, file, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
-        # 保存到合并文件（兼容旧版）
         with open(self.merge_yml_file_path, 'w', encoding='utf-8') as file:
             yaml.safe_dump(all_data, file, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
@@ -291,88 +299,213 @@ class ScreenContext:
             self.reload(from_memory=True)
 
     def init_screen_route(self) -> None:
+        """初始化画面间的跳转路径（分离计算）"""
+        # 1. 收集全局画面（没有命名空间或 namespace='_global'）
+        global_screens = []
+        app_screens_map: dict[str, list[ScreenInfo]] = {}
+
+        for screen in self.screen_info_list:
+            namespace = getattr(screen, '_namespace', None)
+            if namespace == '_global' or namespace is None:
+                global_screens.append(screen)
+            elif namespace != '_legacy':
+                if namespace not in app_screens_map:
+                    app_screens_map[namespace] = []
+                app_screens_map[namespace].append(screen)
+
+        # 2. 计算全局路径图（只包含全局画面之间的跳转）
+        if global_screens:
+            self._global_route_map = self._compute_routes(global_screens, app_id='_global')
+        else:
+            self._global_route_map = {}
+
+        # 3. 计算各应用路径图（应用内画面 + 全局画面）
+        self._app_route_maps.clear()
+        for app_id, app_screens in app_screens_map.items():
+            all_screens = app_screens + global_screens
+            self._app_route_maps[app_id] = self._compute_routes(all_screens, app_id=app_id)
+
+    def _compute_routes(self, screens: list[ScreenInfo], app_id: str = None) -> dict[str, dict[str, ScreenRoute]]:
         """
-        初始化画面间的跳转路径
-        :return:
+        计算给定画面列表的路径图
+
+        Args:
+            screens: 画面列表
+            app_id: 应用ID（用于过滤跨应用跳转）
         """
-        # 先对任意两个画面之间做初始化
-        for screen_1 in self.screen_info_list:
-            self.screen_route_map[screen_1.screen_name] = {}
-            for screen_2 in self.screen_info_list:
-                self.screen_route_map[screen_1.screen_name][screen_2.screen_name] = ScreenRoute(
+        screen_map = {s.screen_name: s for s in screens}
+
+        # 初始化 route_map
+        route_map: dict[str, dict[str, ScreenRoute]] = {}
+        for screen_1 in screens:
+            route_map[screen_1.screen_name] = {}
+            for screen_2 in screens:
+                route_map[screen_1.screen_name][screen_2.screen_name] = ScreenRoute(
                     from_screen=screen_1.screen_name,
                     to_screen=screen_2.screen_name
                 )
 
-        # 根据画面的goto_list来初始化边
-        for screen_info in self.screen_info_list:
+        # 根据 goto_list 初始化边
+        for screen_info in screens:
             for area in screen_info.area_list:
-                if area.goto_list is None or len(area.goto_list) == 0:
+                if not area.goto_list:
                     continue
-                from_screen_route = self.screen_route_map[screen_info.screen_name]
+
+                from_screen_route = route_map.get(screen_info.screen_name)
                 if from_screen_route is None:
                     log.error('画面路径没有初始化 %s', screen_info.screen_name)
                     continue
+
                 for goto_screen_name in area.goto_list:
-                    if goto_screen_name not in from_screen_route:
-                        log.error('画面路径 %s -> %s 无法找到目标画面', screen_info.screen_name, goto_screen_name)
+                    # 尝试匹配目标画面
+                    matched = self._find_target_screen(
+                        goto_screen_name,
+                        screen_map,
+                        app_id=app_id,
+                        from_screen=screen_info.screen_name
+                    )
+
+                    if matched is None:
+                        # 只在非全局路径计算时报错
+                        if app_id != '_global':
+                            log.warning(f'画面路径 {screen_info.screen_name} -> {goto_screen_name} 无法找到目标画面')
                         continue
-                    from_screen_route[goto_screen_name].node_list.append(
+
+                    from_screen_route[matched].node_list.append(
                         ScreenRouteNode(
                             from_screen=screen_info.screen_name,
                             from_area=area.area_name,
-                            to_screen=goto_screen_name
+                            to_screen=matched
                         )
                     )
 
-        # Floyd算出任意两个画面之间的路径
-        screen_len = len(self.screen_info_list)
+        # Floyd-Warshall 计算最短路径
+        screen_list = list(screen_map.keys())
+        screen_len = len(screen_list)
+
         for k in range(screen_len):
-            screen_k = self.screen_info_list[k]
+            screen_k = screen_list[k]
             for i in range(screen_len):
                 if i == k:
                     continue
-                screen_i = self.screen_info_list[i]
+                screen_i = screen_list[i]
 
-                route_ik: ScreenRoute = self.screen_route_map[screen_i.screen_name][screen_k.screen_name]
-                if not route_ik.can_go:  # 无法从 i 到 k
+                route_ik = route_map[screen_i][screen_k]
+                if not route_ik.can_go:
                     continue
 
                 for j in range(screen_len):
                     if k == j or i == j:
                         continue
-                    screen_j = self.screen_info_list[j]
+                    screen_j = screen_list[j]
 
-                    route_kj: ScreenRoute = self.screen_route_map[screen_k.screen_name][screen_j.screen_name]
-                    if not route_kj.can_go:  # 无法从 k 到 j
+                    route_kj = route_map[screen_k][screen_j]
+                    if not route_kj.can_go:
                         continue
 
-                    route_ij: ScreenRoute = self.screen_route_map[screen_i.screen_name][screen_j.screen_name]
+                    route_ij = route_map[screen_i][screen_j]
 
-                    if (not route_ij.can_go  # 当前无法从 i 到 j
-                        or len(route_ik.node_list) + len(route_kj.node_list) < len(route_ij.node_list)  # 新的更短
-                    ):
-                        route_ij.node_list = []
-                        for node_ik in route_ik.node_list:
-                            route_ij.node_list.append(node_ik)
-                        for node_kj in route_kj.node_list:
-                            route_ij.node_list.append(node_kj)
+                    if (not route_ij.can_go
+                            or len(route_ik.node_list) + len(route_kj.node_list) < len(route_ij.node_list)):
+                        route_ij.node_list = route_ik.node_list + route_kj.node_list
 
-    def get_screen_route(self, from_screen: str, to_screen: str) -> Optional[ScreenRoute]:
+        return route_map
+
+    def _find_target_screen(self, target: str, screen_map: dict, app_id: str = None,
+                            from_screen: str = None) -> str | None:
         """
-        获取两个画面之间的
-        :param from_screen:
-        :param to_screen:
-        :return:
+        查找目标画面（支持命名空间自动补全）
+
+        Args:
+            target: 目标画面名称（可能是原始名称）
+            screen_map: 可用画面映射
+            app_id: 当前应用ID
+            from_screen: 源画面名称（用于提取命名空间）
         """
-        from_route = self.screen_route_map.get(from_screen, None)
-        if from_route is None:
-            return None
-        return from_route.get(to_screen, None)
+        # 1. 直接匹配
+        if target in screen_map:
+            return target
+
+        # 2. 从源画面提取命名空间尝试
+        if from_screen and '.' in from_screen:
+            from_namespace = from_screen.split('.')[0]
+            namespaced = f"{from_namespace}.{target}"
+            if namespaced in screen_map:
+                return namespaced
+
+        # 3. 用当前应用 ID 尝试
+        if app_id and app_id != '_global':
+            namespaced = f"{app_id}.{target}"
+            if namespaced in screen_map:
+                return namespaced
+
+        # 4. 用当前加载的应用 ID 尝试
+        if self._current_app_id and self._current_app_id != '_global' and self._current_app_id != app_id:
+            namespaced = f"{self._current_app_id}.{target}"
+            if namespaced in screen_map:
+                return namespaced
+
+        # 5. 在所有画面中查找以 .{target} 结尾的
+        for name in screen_map.keys():
+            if name.endswith(f".{target}"):
+                return name
+
+        return None
+
+    def get_screen_route(self, from_screen: str, to_screen: str, app_id: str | None = None) -> Optional[ScreenRoute]:
+        """获取两个画面之间的跳转路径"""
+        target_app = app_id or self._current_app_id
+
+        # 优先使用应用路径图
+        if target_app and target_app in self._app_route_maps:
+            route_map = self._app_route_maps[target_app]
+
+            # 匹配画面名称
+            from_matched = self._match_screen_in_route(from_screen, route_map, target_app)
+            to_matched = self._match_screen_in_route(to_screen, route_map, target_app)
+
+            if from_matched and to_matched:
+                route = route_map.get(from_matched, {}).get(to_matched)
+                if route and route.can_go:
+                    return route
+
+        # 降级使用全局路径图
+        from_matched = self._match_screen_in_route(from_screen, self._global_route_map, '_global')
+        to_matched = self._match_screen_in_route(to_screen, self._global_route_map, '_global')
+
+        if from_matched and to_matched:
+            route = self._global_route_map.get(from_matched, {}).get(to_matched)
+            if route and route.can_go:
+                return route
+
+        return None
+
+    def _match_screen_in_route(self, screen_name: str, route_map: dict, app_id: str) -> str | None:
+        """在路径图中匹配画面名称"""
+        if screen_name in route_map:
+            return screen_name
+
+        if app_id != '_global':
+            namespaced = f"{app_id}.{screen_name}"
+            if namespaced in route_map:
+                return namespaced
+
+        for name in route_map.keys():
+            if name.endswith(f".{screen_name}"):
+                return name
+
+        return None
 
     def update_current_screen_name(self, screen_name: str) -> None:
-        """
-        更新当前的画面名字
-        """
+        """更新当前的画面名字"""
         self.last_screen_name = self.current_screen_name
         self.current_screen_name = screen_name
+
+    def switch_app(self, app_id: str) -> None:
+        """切换当前应用，重新加载画面配置"""
+        if app_id == self._current_app_id:
+            log.debug(f"已在应用 {app_id} 的上下文中，无需切换")
+            return
+        log.info(f"切换画面上下文: {self._current_app_id} -> {app_id}")
+        self.reload(from_separated_files=True, app_id=app_id)
+        log.info(f"加载了 {len(self.screen_info_list)} 个画面，{len(self._screen_area_map)} 个区域")

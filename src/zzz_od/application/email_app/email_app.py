@@ -26,11 +26,11 @@ class EmailApp(ZApplication):
         执行前的初始化 由子类实现
         注意初始化要全面 方便一个指令重复使用
         """
-        pass
+        super().handle_init()
 
     @operation_node(name='打开邮件', is_start_node=True)
     def goto_email(self) -> OperationRoundResult:
-        return self.round_by_goto_screen(screen_name='邮件')
+        return self.round_by_find_and_click_area(self.last_screenshot, '菜单', '底部-邮件')
 
     @node_from(from_name='打开邮件')
     @node_notify(when=NotifyTiming.CURRENT_SUCCESS)

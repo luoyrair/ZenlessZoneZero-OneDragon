@@ -13,6 +13,7 @@ from zzz_od.application.drive_disc_dismantle.drive_disc_dismantle_run_record imp
 from zzz_od.application.zzz_application import ZApplication
 from zzz_od.context.zzz_context import ZContext
 from zzz_od.operation.back_to_normal_world import BackToNormalWorld
+from zzz_od.operation.goto.goto_menu import GotoMenu
 
 
 class DriveDiscDismantleApp(ZApplication):
@@ -35,15 +36,34 @@ class DriveDiscDismantleApp(ZApplication):
             app_id=drive_disc_dismantle_const.APP_ID,
         )
 
-    @operation_node(name='开始前返回', is_start_node=True)
-    def back_at_first(self) -> OperationRoundResult:
-        op = BackToNormalWorld(self.ctx)
+    @operation_node(name='打开菜单', is_start_node=True)
+    def open_menu(self) -> OperationRoundResult:
+        op = GotoMenu(self.ctx)
         return self.round_by_op_result(op.execute())
 
-    @node_from(from_name='开始前返回')
+    @node_from(from_name='打开菜单')
+    @operation_node(name='进入仓库')
+    def enter_storage(self) -> OperationRoundResult:
+        # 1. 点击菜单的底部-仓库
+        result = self.round_by_find_and_click_area(self.last_screenshot, '菜单', '底部-仓库')
+        if result.is_success:
+            # 2. 点击 TAB 切换到驱动盘
+            return self.round_success(result.status)
+
+        return self.round_retry(wait=1)
+
+    @node_from(from_name='进入仓库')
     @operation_node(name='前往分解画面')
     def goto_salvage(self) -> OperationRoundResult:
-        return self.round_by_goto_screen(screen_name='仓库-驱动仓库-驱动盘拆解')
+        result = self.round_by_find_and_click_area(
+            self.last_screenshot, '仓库-音擎仓库', 'TAB-驱动盘',
+            pre_delay=1
+        )
+        if result.is_success:
+            # 2. 点击 TAB 切换到驱动盘
+            return self.round_by_click_area('仓库-驱动仓库', '按钮-拆解')
+
+        return self.round_retry(wait=1)
 
     @node_from(from_name='前往分解画面')
     @operation_node(name='快速选择')

@@ -63,6 +63,14 @@ class Application(Operation):
         """
         运行前初始化
         """
+        # 切换到当前应用的画面上下文
+        # 注意：应用组（如 one_dragon）没有自己的画面配置，跳过
+        if hasattr(self, 'app_id') and self.app_id:
+            app_screen_dir = self.ctx.screen_loader.get_app_screen_dir(self.app_id)
+            import os
+            if os.path.exists(app_screen_dir):
+                self.ctx.screen_loader.switch_app(self.app_id)
+
         Operation.handle_init(self)
         if self.run_record is not None:
             self.run_record.check_and_update_status()  # 先判断是否重置记录

@@ -72,7 +72,7 @@ class CoffeeApp(ZApplication):
         执行前的初始化 由子类实现
         注意初始化要全面 方便一个指令重复使用
         """
-        pass
+        super().handle_init()
 
     @operation_node(name='传送', is_start_node=True)
     def transport(self) -> OperationRoundResult:

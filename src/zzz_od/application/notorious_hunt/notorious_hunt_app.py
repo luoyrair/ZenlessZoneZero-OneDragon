@@ -46,6 +46,7 @@ class NotoriousHuntApp(ZApplication):
         执行前的初始化 由子类实现
         注意初始化要全面 方便一个指令重复使用
         """
+        super().handle_init()
         self.next_plan: Optional[ChargePlanItem] = None
 
     @operation_node(name='传送', is_start_node=True)

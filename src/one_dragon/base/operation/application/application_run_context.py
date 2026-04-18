@@ -409,6 +409,8 @@ class ApplicationRunContext:
         if not self.start_running():
             return False
 
+        self.ctx.screen_loader.switch_app(app_id)
+
         app = self.get_application(app_id, instance_idx, group_id)
         if app is None:
             log.error("应用 {} 未注册", app_id)

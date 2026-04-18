@@ -86,7 +86,8 @@ class WorldPatrolApp(ZApplication):
             return self.round_success(status='无任务追踪')
 
         # 有任务追踪
-        return self.round_by_goto_screen(screen_name='绳网', retry_wait=1)
+        return self.round_by_find_and_click_area(
+            self.last_screenshot, '菜单', '底部-绳网', retry_wait=1)
 
     @node_from(from_name='前往绳网')
     @operation_node(name='停止追踪')

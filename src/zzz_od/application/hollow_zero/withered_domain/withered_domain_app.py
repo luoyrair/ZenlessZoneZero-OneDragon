@@ -51,6 +51,7 @@ class WitheredDomainApp(ZApplication):
         self.phase: int = 1
 
     def handle_init(self):
+        super().handle_init()
         self.ctx.withered_domain.init_before_run()
         mission_name = self.config.mission_name
         idx = mission_name.find('-')
