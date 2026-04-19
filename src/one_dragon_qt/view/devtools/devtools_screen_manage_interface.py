@@ -478,13 +478,14 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
         self.screen_name_edit.setDisabled(not chosen)
         self.pc_alt_opt.setDisabled(not chosen)
 
-        if not chosen:  # 清除一些值
+        if not chosen:
             self.screen_id_edit.setText('')
             self.screen_name_edit.setText('')
             self.pc_alt_opt.setChecked(False)
         else:
             self.screen_id_edit.setText(self.chosen_screen.screen_id)
-            self.screen_name_edit.setText(self.chosen_screen.screen_name)
+            # 使用 display_name 显示，用户看不到命名空间前缀
+            self.screen_name_edit.setText(self.chosen_screen.display_name)
             self.pc_alt_opt.setChecked(self.chosen_screen.pc_alt)
 
         self._update_image_display()
@@ -625,17 +626,19 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
 
         # 根据用户选择的应用ID设置默认命名空间
         if app_id and app_id != '_global':
-            # 设置命名空间，保存时会根据 screen_name 推断
-            default_screen_name = "新画面"
-            self.chosen_screen.set_namespace(app_id, default_screen_name)
+            # 设置命名空间，original_name 使用显示名称（不带命名空间）
+            display_name = "新画面"
+            self.chosen_screen.set_namespace(app_id, display_name)
             self.chosen_app_id = app_id
             print(f"[DEBUG] _on_create_clicked: 设置 chosen_app_id={self.chosen_app_id}")
 
             # 设置默认的 screen_id
             default_screen_id = f"{app_id}_new_screen"
             self.chosen_screen.screen_id = default_screen_id
+            # screen_name 已经在 set_namespace 中设置为 "app_id.新画面"
+            # 但界面显示时会使用 display_name 属性，所以用户看到的是 "新画面"
             print(
-                f"[DEBUG] _on_create_clicked: screen_id='{default_screen_id}', screen_name='{self.chosen_screen.screen_name}'")
+                f"[DEBUG] _on_create_clicked: screen_id='{default_screen_id}', 内部 screen_name='{self.chosen_screen.screen_name}', 显示名称='{self.chosen_screen.display_name}'")
         else:
             self.chosen_app_id = None
             print(f"[DEBUG] _on_create_clicked: 设置 chosen_app_id={self.chosen_app_id} (全局)")
@@ -862,7 +865,17 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
         if self.chosen_screen is None:
             return
 
-        self.chosen_screen.screen_name = self.screen_name_edit.text()
+        # 用户修改的是显示名称（不带命名空间）
+        new_display_name = self.screen_name_edit.text()
+
+        # 更新 original_screen_name
+        self.chosen_screen.original_screen_name = new_display_name
+
+        # 如果有命名空间，重新构建完整的 screen_name
+        if self.chosen_screen.namespace and self.chosen_screen.namespace != '_global':
+            self.chosen_screen.screen_name = f"{self.chosen_screen.namespace}.{new_display_name}"
+        else:
+            self.chosen_screen.screen_name = new_display_name
 
     def _on_pc_alt_changed(self, checked: bool) -> None:
         if self.chosen_screen is None:
