@@ -314,20 +314,15 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
         """当选择的应用发生变化时，更新已有画面下拉列表。"""
         # 如果 app_id 为空或 None，不进行处理
         if not app_id:
-            print(f"[DEBUG] _on_app_id_changed: app_id 为空，跳过处理")
             return
 
-        print(f"[DEBUG] _on_app_id_changed: app_id='{app_id}', old chosen_app_id={self.chosen_app_id}")
         self.chosen_app_id = app_id if app_id != '_global' else None
-        print(f"[DEBUG] _on_app_id_changed: new chosen_app_id={self.chosen_app_id}")
 
         if self.chosen_screen is not None:
-            print(f"[DEBUG] _on_app_id_changed: 正在编辑中，跳过更新")
             return
 
         # 重新加载应用画面
         target_app_id = self.chosen_app_id if self.chosen_app_id != '_global' else None
-        print(f"[DEBUG] _on_app_id_changed: 重新加载应用 '{target_app_id}' 的画面")
         self.ctx.screen_loader.reload(from_memory=False, app_id=target_app_id)
 
         self._update_existed_yml_options()
@@ -390,8 +385,6 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
 
     def _update_existed_yml_options(self) -> None:
         """更新已有的yml选项。"""
-        print(f"[DEBUG] _update_existed_yml_options: chosen_app_id={self.chosen_app_id}")
-
         # 如果 chosen_app_id 为 None，显示所有画面（全局 + 所有应用）
         if self.chosen_app_id is None or self.chosen_app_id == '_global':
             # 显示所有画面
@@ -401,11 +394,9 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
                     label=screen.display_name,
                     value=screen.screen_name
                 ))
-            print(f"[DEBUG] _update_existed_yml_options: 显示所有画面，找到 {len(items)} 个")
         else:
             # 只显示指定应用的画面
             items = []
-            print(f"[DEBUG] _update_existed_yml_options: 筛选应用 '{self.chosen_app_id}' 的画面")
             for screen in self.ctx.screen_loader.screen_info_list:
                 loaded_app_id = getattr(screen, '_loaded_app_id', None)
                 namespace = screen.namespace
@@ -415,9 +406,6 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
                         label=screen.display_name,
                         value=screen.screen_name
                     ))
-                    print(f"[DEBUG]     匹配: {screen.display_name}")
-
-            print(f"[DEBUG] _update_existed_yml_options: 筛选后找到 {len(items)} 个画面")
 
         self.existed_yml_btn.blockSignals(True)
         self.existed_yml_btn.set_items(items)
@@ -547,8 +535,6 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
 
     def _on_choose_existed_yml(self, screen_name: str):
         """选择了已有的yml。"""
-        print(
-            f"[DEBUG] _on_choose_existed_yml: screen_name='{screen_name}', current chosen_app_id={self.chosen_app_id}")
         self.chosen_screen = None
 
         # 获取当前选中的项的实际值（完整 screen_name）
@@ -558,18 +544,15 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
         else:
             full_screen_name = current_item
 
-        print(f"[DEBUG] _on_choose_existed_yml: 使用完整名称 '{full_screen_name}' 搜索")
 
         # 搜索时 输入了一半时候会找到对应的画面
         with suppress(Exception):
             self.chosen_screen = self.ctx.screen_loader.get_screen(full_screen_name, copy=True)
         if self.chosen_screen is None:
-            print(f"[DEBUG] _on_choose_existed_yml: 未找到画面")
             return
 
         # 获取原文件所属的应用ID
         original_app_id = self.chosen_screen.namespace
-        print(f"[DEBUG] _on_choose_existed_yml: original_app_id='{original_app_id}'")
 
         if original_app_id and original_app_id != '_global':
             self.chosen_app_id = original_app_id
@@ -579,14 +562,12 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
             self.app_id_combo.blockSignals(False)
             # 手动触发重新加载（因为上面 blockSignals 了）
             self._on_app_id_changed(original_app_id)
-            print(f"[DEBUG] _on_choose_existed_yml: 设置 chosen_app_id={self.chosen_app_id} (来自 namespace)")
         else:
             self.chosen_app_id = None
             self.app_id_combo.blockSignals(True)
             self.app_id_combo.setCurrentText('_global')
             self.app_id_combo.blockSignals(False)
             self._on_app_id_changed('_global')
-            print(f"[DEBUG] _on_choose_existed_yml: 设置 chosen_app_id={self.chosen_app_id} (默认全局)")
 
         self._clear_history()
         self._update_history_buttons()
@@ -594,9 +575,7 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
 
     def _on_create_clicked(self):
         """创建一个新的画面。支持创建新应用的yml文件及对应子目录。"""
-        print(f"[DEBUG] _on_create_clicked: current chosen_app_id={self.chosen_app_id}")
         if self.chosen_screen is not None:
-            print(f"[DEBUG] _on_create_clicked: 已有选中画面，跳过创建")
             return
 
         # 获取用户选择的应用ID
@@ -607,8 +586,6 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
             app_id = '_global'
             self.app_id_combo.setCurrentText('_global')
 
-        print(f"[DEBUG] _on_create_clicked: app_id from combo='{app_id}'")
-
         # 检查是否需要创建新应用目录
         existing_apps = self.ctx.screen_loader.loader.get_app_dirs()
 
@@ -617,7 +594,6 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
                 # 创建新的应用目录
                 new_app_dir = os.path.join(self.ctx.screen_loader.loader.base_dir, app_id)
                 os.makedirs(new_app_dir, exist_ok=True)
-                print(f"[DEBUG] _on_create_clicked: 创建新应用目录 '{new_app_dir}'")
 
                 # 刷新应用下拉列表
                 self._refresh_app_id_combo()
@@ -630,18 +606,12 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
             display_name = "新画面"
             self.chosen_screen.set_namespace(app_id, display_name)
             self.chosen_app_id = app_id
-            print(f"[DEBUG] _on_create_clicked: 设置 chosen_app_id={self.chosen_app_id}")
 
             # 设置默认的 screen_id
             default_screen_id = f"{app_id}_new_screen"
             self.chosen_screen.screen_id = default_screen_id
-            # screen_name 已经在 set_namespace 中设置为 "app_id.新画面"
-            # 但界面显示时会使用 display_name 属性，所以用户看到的是 "新画面"
-            print(
-                f"[DEBUG] _on_create_clicked: screen_id='{default_screen_id}', 内部 screen_name='{self.chosen_screen.screen_name}', 显示名称='{self.chosen_screen.display_name}'")
         else:
             self.chosen_app_id = None
-            print(f"[DEBUG] _on_create_clicked: 设置 chosen_app_id={self.chosen_app_id} (全局)")
             self.chosen_screen.screen_id = "new_screen"
             self.chosen_screen.screen_name = "新画面"
 
@@ -665,9 +635,7 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
 
     def _on_save_clicked(self) -> None:
         """保存。"""
-        print(f"[DEBUG] _on_save_clicked: chosen_app_id={self.chosen_app_id}")
         if self.chosen_screen is None:
-            print(f"[DEBUG] _on_save_clicked: 无选中画面，跳过保存")
             return
 
         # 获取目标应用ID
@@ -675,25 +643,19 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
         if target_app_id == '_global':
             target_app_id = None
 
-        print(f"[DEBUG] _on_save_clicked: target_app_id={target_app_id}")
-
         # 如果 screen_name 没有命名空间前缀，自动添加
         if target_app_id:
             if '.' not in self.chosen_screen.screen_name:
                 old_name = self.chosen_screen.screen_name
                 self.chosen_screen.screen_name = f"{target_app_id}.{self.chosen_screen.screen_name}"
                 self.screen_name_edit.setText(self.chosen_screen.screen_name)
-                print(f"[DEBUG] _on_save_clicked: 添加命名空间前缀 '{old_name}' -> '{self.chosen_screen.screen_name}'")
 
         self.ctx.screen_loader.save_screen(self.chosen_screen, app_id=target_app_id)
-        print(f"[DEBUG] _on_save_clicked: 保存完成")
         self._existed_yml_update.signal.emit()
 
     def _on_delete_clicked(self) -> None:
         """删除。"""
-        print(f"[DEBUG] _on_delete_clicked: chosen_app_id={self.chosen_app_id}")
         if self.chosen_screen is None:
-            print(f"[DEBUG] _on_delete_clicked: 无选中画面，跳过删除")
             return
 
         # 获取原文件所属的应用ID
@@ -701,12 +663,9 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
         if target_app_id == '_global':
             target_app_id = None
 
-        print(f"[DEBUG] _on_delete_clicked: target_app_id={target_app_id}, screen_id={self.chosen_screen.screen_id}")
-
         self.ctx.screen_loader.delete_screen(self.chosen_screen.screen_id, app_id=target_app_id)
         self.chosen_screen = None
         self.chosen_app_id = None
-        print(f"[DEBUG] _on_delete_clicked: 删除完成，重置 chosen_app_id={self.chosen_app_id}")
         self._whole_update.signal.emit()
         self._existed_yml_update.signal.emit()
 
@@ -730,7 +689,6 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
         self._clear_history()
 
         # 重新加载全局画面
-        print(f"[DEBUG] _on_cancel_clicked: 重新加载全局画面")
         self.ctx.screen_loader.reload(from_memory=False, app_id=None)
 
         self._whole_update.signal.emit()
