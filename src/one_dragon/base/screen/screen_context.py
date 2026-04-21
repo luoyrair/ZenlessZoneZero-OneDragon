@@ -44,13 +44,27 @@ class ScreenContext:
 
     不负责：
     - 配置文件的加载/保存（由 ScreenConfigLoader 负责）
+
+    设计说明：
+    - _global 数据在初始化时加载一次，之后不再变化
+    - reload 只重新加载 app 的数据
     """
 
     def __init__(self):
         # 配置加载器（延迟初始化）
         self._loader: ScreenConfigLoader | None = None
 
-        # 运行时数据存储
+        # 全局数据（初始化时加载一次，之后不变）
+        self._global_screen_info_list: list[ScreenInfo] = []
+        self._global_screen_info_map: dict[str, ScreenInfo] = {}
+        self._global_screen_area_map: dict[str, ScreenArea] = {}
+
+        # App 数据（随 reload 变化）
+        self._app_screen_info_list: list[ScreenInfo] = []
+        self._app_screen_info_map: dict[str, ScreenInfo] = {}
+        self._app_screen_area_map: dict[str, ScreenArea] = {}
+
+        # 运行时数据（全局 + App 的合并视图）
         self.screen_info_list: list[ScreenInfo] = []
         self.screen_info_map: dict[str, ScreenInfo] = {}
         self._screen_area_map: dict[str, ScreenArea] = {}
@@ -66,6 +80,9 @@ class ScreenContext:
 
         # 当前加载的应用ID
         self._current_app_id: str | None = None
+
+        # 初始化时加载全局数据
+        self._init_global_data()
 
     @property
     def yml_file_dir(self) -> str:
@@ -88,6 +105,39 @@ class ScreenContext:
     def current_app_id(self) -> str | None:
         """获取当前加载的应用ID"""
         return self._current_app_id
+
+    # ========== 初始化全局数据 ==========
+
+    def _init_global_data(self) -> None:
+        """初始化全局数据（只在初始化时调用一次）"""
+        # 清空全局存储
+        self._global_screen_info_list.clear()
+        self._global_screen_info_map.clear()
+        self._global_screen_area_map.clear()
+        self._id_2_screen.clear()
+
+        # 加载全局画面
+        global_screens = self.loader.load_global_screens()
+        for screen in global_screens:
+            self._add_to_global(screen)
+            self._id_2_screen[screen.screen_id] = screen
+
+        log.info(f"加载了 {len(self._global_screen_info_list)} 个全局画面")
+
+        # 计算全局路径图
+        if self._global_screen_info_list:
+            self._global_route_map = self._compute_routes(
+                self._global_screen_info_list, app_id='_global'
+            )
+        else:
+            self._global_route_map = {}
+
+    def _add_to_global(self, screen: ScreenInfo) -> None:
+        """添加画面到全局存储"""
+        self._global_screen_info_list.append(screen)
+        self._global_screen_info_map[screen.screen_name] = screen
+        for area in screen.area_list:
+            self._global_screen_area_map[f'{screen.screen_name}.{area.area_name}'] = area
 
     # ========== 第三方插件管理 ==========
 
@@ -113,57 +163,94 @@ class ScreenContext:
 
     def reload(self, from_memory: bool = False, app_id: str | None = None) -> None:
         """
-        重新加载配置文件
+        重新加载应用配置（全局数据不变）
 
         Args:
             from_memory: 是否从内存中加载（保存后刷新使用）
-            app_id: 指定应用ID，为 None 时只加载 _global
+            app_id: 指定应用ID，为 None 时清空当前应用数据
         """
-        self.screen_info_list.clear()
-        self.screen_info_map.clear()
-        self._screen_area_map.clear()
-
         if from_memory:
             self._load_from_memory()
         else:
             self._load_from_files(app_id)
 
-        if app_id is None:
-            log.info(f"加载了 {len(self.screen_info_list)} 个画面，{len(self._screen_area_map)} 个区域")
+        # 合并运行时数据
+        self._merge_runtime_data()
 
+        # 重新计算路径图
         self._init_screen_route()
 
+        if app_id is None:
+            log.info(f"清空应用数据，当前共 {len(self.screen_info_list)} 个画面")
+        else:
+            log.info(f"加载了 {len(self._app_screen_info_list)} 个应用画面，共 {len(self.screen_info_list)} 个画面")
+
     def _load_from_memory(self) -> None:
-        """从内存中的 _id_2_screen 加载（保存后刷新）"""
-        for screen_info in self._id_2_screen.values():
-            self._add_screen(screen_info)
+        """从内存中的 _id_2_screen 加载应用数据（保存后刷新）"""
+        # 清空 App 数据
+        self._app_screen_info_list.clear()
+        self._app_screen_info_map.clear()
+        self._app_screen_area_map.clear()
+
+        # 从 _id_2_screen 中筛选出属于当前应用的数据
+        # 注意：_id_2_screen 中保存了所有已加载的画面（包括全局和应用）
+        # 全局数据已经在 _init_global_data 中处理，这里只加载应用数据
+        current_namespace = self._current_app_id
+        if current_namespace:
+            for screen in self._id_2_screen.values():
+                # 判断是否属于当前应用（通过命名空间）
+                if hasattr(screen, 'namespace') and screen.namespace == current_namespace:
+                    self._add_to_app(screen)
+                elif '.' in screen.screen_name and screen.screen_name.startswith(f"{current_namespace}."):
+                    self._add_to_app(screen)
 
     def _load_from_files(self, app_id: str | None = None) -> None:
-        """从文件系统加载画面配置"""
-        # 清空内存存储
-        self._id_2_screen.clear()
+        """从文件系统加载应用配置"""
+        # 清空 App 数据
+        self._app_screen_info_list.clear()
+        self._app_screen_info_map.clear()
+        self._app_screen_area_map.clear()
 
-        # 1. 加载全局画面
-        global_screens = self.loader.load_global_screens()
-        for screen in global_screens:
-            self._add_screen(screen)
-            self._id_2_screen[screen.screen_id] = screen
+        # 从 _id_2_screen 中删除属于旧 App 的画面
+        if self._current_app_id is not None:
+            old_app_screen_ids = []
+            for screen_id, screen in self._id_2_screen.items():
+                # 判断是否属于旧应用
+                if hasattr(screen, 'namespace') and screen.namespace == self._current_app_id:
+                    old_app_screen_ids.append(screen_id)
+                elif '.' in screen.screen_name and screen.screen_name.startswith(f"{self._current_app_id}."):
+                    old_app_screen_ids.append(screen_id)
 
-        # 2. 加载应用专属画面
+            for screen_id in old_app_screen_ids:
+                if screen_id in self._id_2_screen:
+                    del self._id_2_screen[screen_id]
+
+        # 加载新的 App 数据
         if app_id is not None:
             app_screens = self.loader.load_app_screens(app_id)
             for screen in app_screens:
-                self._add_screen(screen)
+                self._add_to_app(screen)
                 self._id_2_screen[screen.screen_id] = screen
 
         self._current_app_id = app_id
 
-    def _add_screen(self, screen: ScreenInfo) -> None:
-        """添加画面到内部存储"""
-        self.screen_info_list.append(screen)
-        self.screen_info_map[screen.screen_name] = screen
+    def _add_to_app(self, screen: ScreenInfo) -> None:
+        """添加画面到 App 存储"""
+        self._app_screen_info_list.append(screen)
+        self._app_screen_info_map[screen.screen_name] = screen
         for area in screen.area_list:
-            self._screen_area_map[f'{screen.screen_name}.{area.area_name}'] = area
+            self._app_screen_area_map[f'{screen.screen_name}.{area.area_name}'] = area
+
+    def _merge_runtime_data(self) -> None:
+        """合并全局数据和 App 数据到运行时视图"""
+        # 合并画面列表
+        self.screen_info_list = self._global_screen_info_list + self._app_screen_info_list
+
+        # 合并画面映射
+        self.screen_info_map = {**self._global_screen_info_map, **self._app_screen_info_map}
+
+        # 合并区域映射
+        self._screen_area_map = {**self._global_screen_area_map, **self._app_screen_area_map}
 
     # ========== 画面/区域查询 ==========
 
@@ -224,31 +311,19 @@ class ScreenContext:
     # ========== 路径计算 ==========
 
     def _init_screen_route(self) -> None:
-        """初始化画面间的跳转路径（分离计算）"""
-        # 1. 收集全局画面
-        global_screens = []
-        app_screens_map: dict[str, list[ScreenInfo]] = {}
+        """初始化画面间的跳转路径"""
+        # 全局路径图已在 _init_global_data 中计算，不需要重复计算
 
-        for screen in self.screen_info_list:
-            namespace = getattr(screen, '_namespace', None)
-            if namespace == '_global' or namespace is None:
-                global_screens.append(screen)
-            elif namespace != '_legacy':
-                if namespace not in app_screens_map:
-                    app_screens_map[namespace] = []
-                app_screens_map[namespace].append(screen)
+        # 收集当前应用的所有画面（包括全局）
+        all_screens = self.screen_info_list
 
-        # 2. 计算全局路径图
-        if global_screens:
-            self._global_route_map = self._compute_routes(global_screens, app_id='_global')
-        else:
-            self._global_route_map = {}
+        if not all_screens:
+            self._app_route_maps = {}
+            return
 
-        # 3. 计算各应用路径图
-        self._app_route_maps.clear()
-        for app_id, app_screens in app_screens_map.items():
-            all_screens = app_screens + global_screens
-            self._app_route_maps[app_id] = self._compute_routes(all_screens, app_id=app_id)
+        # 计算当前应用的路径图
+        current_app_id = self._current_app_id or '_no_app'
+        self._app_route_maps[current_app_id] = self._compute_routes(all_screens, app_id=current_app_id)
 
     def _compute_routes(self, screens: list[ScreenInfo], app_id: str = None) -> dict[str, dict[str, ScreenRoute]]:
         """计算给定画面列表的路径图（Floyd-Warshall）"""
@@ -418,7 +493,6 @@ class ScreenContext:
             return
         log.info(f"切换画面上下文: {self._current_app_id} -> {app_id}")
         self.reload(from_memory=False, app_id=app_id)
-        log.info(f"加载了 {len(self.screen_info_list)} 个画面，{len(self._screen_area_map)} 个区域")
 
     # ========== 保存/删除（委托给 Loader） ==========
 
@@ -446,7 +520,7 @@ class ScreenContext:
         self._id_2_screen[screen_info.screen_id] = screen_info
         screen_info._loaded_app_id = target_app_id
 
-        # 重新加载到运行时
+        # 重新加载到运行时（从内存中恢复）
         self.reload(from_memory=True, app_id=self._current_app_id)
 
     def delete_screen(self, screen_id: str, app_id: str | None = None) -> None:
@@ -470,7 +544,7 @@ class ScreenContext:
         # 从内存删除
         del self._id_2_screen[screen_id]
 
-        # 重新加载到运行时
+        # 重新加载到运行时（从内存中恢复）
         self.reload(from_memory=True, app_id=self._current_app_id)
 
     def is_third_party_app(self, app_id: str) -> bool:
