@@ -592,7 +592,7 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
         if app_id and app_id != '_global':
             if app_id not in existing_apps:
                 # 创建新的应用目录
-                new_app_dir = os.path.join(self.ctx.screen_loader.loader.base_dir, app_id)
+                new_app_dir = os.path.join(self.ctx.screen_loader.loader.builtin_base_dir, app_id)
                 os.makedirs(new_app_dir, exist_ok=True)
 
                 # 刷新应用下拉列表
@@ -681,6 +681,8 @@ class DevtoolsScreenManageInterface(VerticalScrollInterface, HistoryMixin):
         self.app_id_combo.blockSignals(True)
         self.app_id_combo.setCurrentText('_global')
         self.app_id_combo.blockSignals(False)
+
+        self._update_existed_yml_options()
 
         self.area_table_row_selected = -1
         self.x_pos_label.setText('')

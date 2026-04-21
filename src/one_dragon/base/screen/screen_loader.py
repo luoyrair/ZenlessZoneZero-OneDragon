@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+from typing import List
 
 import yaml
 
@@ -7,59 +9,124 @@ from one_dragon.utils import yaml_utils
 
 
 class ScreenConfigLoader:
-    """画面配置加载器 - 只负责从YAML加载和保存数据，不存储运行时状态"""
+    """画面配置加载器 - 支持内置和第三方插件"""
 
-    def __init__(self, base_dir: str):
+    def __init__(self, builtin_base_dir: str):
         """
         初始化加载器
 
         Args:
-            base_dir: screen_info 根目录路径
+            builtin_base_dir: 内置 screen_info 根目录路径
         """
-        self.base_dir = base_dir
-        self.global_dir = os.path.join(base_dir, '_global')
+        self.builtin_base_dir = builtin_base_dir
+        self.builtin_global_dir = os.path.join(builtin_base_dir, '_global')
+
+        # 第三方插件画面目录列表 {app_id: plugin_screen_dir}
+        self._third_party_apps: dict[str, str] = {}
+
+    # ========== 第三方插件管理 ==========
+
+    def add_third_party_plugins(self, plugin_dirs: list[tuple[Path, str]]) -> None:
+        """
+        批量添加第三方插件目录
+
+        Args:
+            plugin_dirs: application_plugin_dirs 返回的列表
+        """
+        from one_dragon.base.operation.application.plugin_info import PluginSource
+
+        for plugin_dir, source in plugin_dirs:
+            if source != PluginSource.THIRD_PARTY:
+                continue
+
+            # 第三方插件目录：plugins/ 是父目录，需要遍历其下的子目录
+            if not plugin_dir.exists():
+                continue
+
+            # 遍历 plugins 目录下的每个插件子目录
+            for sub_dir in plugin_dir.iterdir():
+                if not sub_dir.is_dir():
+                    continue
+
+                # 检查插件是否有 screen 目录
+                screen_dir = sub_dir / 'screen'
+                if not screen_dir.exists():
+                    continue
+
+                # 扫描插件 screen 目录下的所有应用画面目录
+                for item in screen_dir.iterdir():
+                    if not item.is_dir():
+                        continue
+                    if item.name == '_global':
+                        # 插件不能提供全局画面，跳过
+                        continue
+
+                    app_id = item.name
+                    if app_id in self._third_party_apps:
+                        # 同一个 app_id 被多个插件提供，报错
+                        raise Exception(f"app_id '{app_id}' 已被插件 '{self._third_party_apps[app_id]}' 提供，当前插件 '{sub_dir}' 冲突")
+                    self._third_party_apps[app_id] = str(sub_dir)
+
+    def clear_third_party_plugins(self) -> None:
+        """清空所有第三方插件"""
+        self._third_party_apps.clear()
+
+    def get_third_party_apps(self) -> dict[str, str]:
+        """获取所有第三方插件应用 {app_id: plugin_dir}"""
+        return self._third_party_apps.copy()
 
     # ========== 加载方法 ==========
 
-    def load_global_screens(self) -> list[ScreenInfo]:
-        """加载所有全局画面"""
-        return self._load_screens_from_dir(self.global_dir, namespace='_global')
+    def load_global_screens(self) -> List[ScreenInfo]:
+        """加载所有全局画面（仅内置）"""
+        return self._load_screens_from_dir(self.builtin_global_dir, namespace='_global')
 
-    def load_app_screens(self, app_id: str) -> list[ScreenInfo]:
+    def load_app_screens(self, app_id: str) -> List[ScreenInfo]:
         """
         加载指定应用的画面
 
         Args:
-            app_id: 应用ID（目录名）
+            app_id: 应用ID（全局唯一）
         """
-        app_dir = os.path.join(self.base_dir, app_id)
-        if not os.path.exists(app_dir):
-            return []
-        return self._load_screens_from_dir(app_dir, namespace=app_id)
+        screens = []
 
-    def load_all_app_screens(self) -> list[ScreenInfo]:
+        # 内置应用
+        builtin_app_dir = os.path.join(self.builtin_base_dir, app_id)
+        if os.path.exists(builtin_app_dir):
+            screens.extend(self._load_screens_from_dir(builtin_app_dir, namespace=app_id))
+
+        # 第三方插件应用
+        if app_id in self._third_party_apps:
+            plugin_dir = Path(self._third_party_apps[app_id])
+            plugin_app_dir = plugin_dir / 'screen' / app_id
+            if plugin_app_dir.exists():
+                screens.extend(self._load_screens_from_dir(str(plugin_app_dir), namespace=app_id))
+
+        return screens
+
+    def load_all_app_screens(self) -> List[ScreenInfo]:
         """加载所有应用的画面（开发工具使用）"""
         all_screens = []
 
-        # 1. 加载全局
         all_screens.extend(self.load_global_screens())
 
-        # 2. 遍历所有应用目录
-        for item in os.listdir(self.base_dir):
-            if item == '_global' or not os.path.isdir(os.path.join(self.base_dir, item)):
+        # 内置应用
+        for item in os.listdir(self.builtin_base_dir):
+            if item == '_global' or not os.path.isdir(os.path.join(self.builtin_base_dir, item)):
                 continue
             all_screens.extend(self.load_app_screens(item))
 
+        # 第三方插件应用
+        for app_id in self._third_party_apps:
+            builtin_app_dir = os.path.join(self.builtin_base_dir, app_id)
+            if not os.path.exists(builtin_app_dir):
+                all_screens.extend(self.load_app_screens(app_id))
+
         return all_screens
 
-    def _load_screens_from_dir(self, directory: str, namespace: str) -> list[ScreenInfo]:
-        """
-        从目录加载所有 YAML 文件
-
-        Args:
-            directory: 目录路径
-            namespace: 命名空间（_global 或 app_id）
-        """
+    @staticmethod
+    def _load_screens_from_dir(directory: str, namespace: str) -> list[ScreenInfo]:
+        """从目录加载所有 YAML 文件"""
         screens = []
         if not os.path.exists(directory):
             return screens
@@ -75,14 +142,11 @@ class ScreenConfigLoader:
             if not data:
                 continue
 
-            # 支持单文件多画面
             items = data if isinstance(data, list) else [data]
             for item in items:
                 screen = ScreenInfo(item)
-                if namespace != '_global':
-                    screen.set_namespace(namespace, screen.screen_name)
-                else:
-                    screen.set_namespace('_global', screen.screen_name)
+                original_name = item.get('screen_name', '')
+                screen.set_namespace(namespace, original_name)
                 screens.append(screen)
 
         return screens
@@ -91,22 +155,20 @@ class ScreenConfigLoader:
 
     def save_screen(self, screen: ScreenInfo, app_id: str | None = None) -> None:
         """
-        保存画面到文件
+        保存画面到内置目录
 
         Args:
             screen: 要保存的画面信息
             app_id: 目标应用ID，None 表示全局
         """
-        # 确定保存目录
         if app_id and app_id != '_global':
-            target_dir = os.path.join(self.base_dir, app_id)
+            target_dir = os.path.join(self.builtin_base_dir, app_id)
         else:
-            target_dir = self.global_dir
+            target_dir = self.builtin_global_dir
 
         os.makedirs(target_dir, exist_ok=True)
 
-        # 使用原始名称作为文件名
-        file_name = f"{screen.screen_id}.yml"
+        file_name = f"{screen.original_screen_name}.yml"
         file_path = os.path.join(target_dir, file_name)
 
         with open(file_path, 'w', encoding='utf-8') as f:
@@ -114,19 +176,13 @@ class ScreenConfigLoader:
                            default_flow_style=False, sort_keys=False)
 
     def delete_screen(self, screen: ScreenInfo, app_id: str | None = None) -> None:
-        """
-        删除画面文件
-
-        Args:
-            screen: 要删除的画面信息
-            app_id: 所属应用ID
-        """
+        """删除内置目录中的画面文件"""
         if app_id and app_id != '_global':
-            target_dir = os.path.join(self.base_dir, app_id)
+            target_dir = os.path.join(self.builtin_base_dir, app_id)
         else:
-            target_dir = self.global_dir
+            target_dir = self.builtin_global_dir
 
-        file_name = f"{screen.screen_id}.yml"
+        file_name = f"{screen.original_screen_name}.yml"
         file_path = os.path.join(target_dir, file_name)
 
         if os.path.exists(file_path):
@@ -134,11 +190,22 @@ class ScreenConfigLoader:
 
     # ========== 辅助方法 ==========
 
-    def get_app_dirs(self) -> list[str]:
+    def get_app_dirs(self) -> List[str]:
         """获取所有应用目录名（不包括 _global）"""
-        apps = []
-        for item in os.listdir(self.base_dir):
-            if item == '_global' or not os.path.isdir(os.path.join(self.base_dir, item)):
+        apps = set()
+
+        # 内置应用
+        for item in os.listdir(self.builtin_base_dir):
+            if item == '_global' or not os.path.isdir(os.path.join(self.builtin_base_dir, item)):
                 continue
-            apps.append(item)
-        return apps
+            apps.add(item)
+
+        # 第三方插件应用
+        for app_id in self._third_party_apps:
+            apps.add(app_id)
+
+        return sorted(apps)
+
+    def is_third_party_app(self, app_id: str) -> bool:
+        """判断应用是否为第三方插件提供的"""
+        return app_id in self._third_party_apps

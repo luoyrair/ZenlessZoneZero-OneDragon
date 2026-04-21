@@ -207,6 +207,9 @@ class OneDragonContext(ContextEventBus, OneDragonEnvContext):
         # 清空现有注册
         self.run_context.clear_applications()
 
+        # 清空第三方插件画面配置
+        self.screen_loader.clear_third_party_plugins()
+
         # 重新发现并注册
         non_default_factories, default_factories = self.factory_manager.discover_factories(reload_modules=True)
 
@@ -215,6 +218,9 @@ class OneDragonContext(ContextEventBus, OneDragonEnvContext):
 
         if default_factories:
             self.run_context.registry_application(default_factories, default_group=True)
+
+        # 重新注册第三方插件的画面配置
+        self.screen_loader.add_third_party_plugins(self.application_plugin_dirs)
 
         # 更新默认应用组
         self.app_group_manager.set_default_apps(self.run_context.default_group_apps)
@@ -247,6 +253,7 @@ class OneDragonContext(ContextEventBus, OneDragonEnvContext):
             if not self._application_registered:  # 只需要注册一次
                 self.register_application_factory()
                 self.app_group_manager.set_default_apps(self.run_context.default_group_apps)
+                self.screen_loader.add_third_party_plugins(self.application_plugin_dirs)
                 self._application_registered = True
 
             self.init_ocr()

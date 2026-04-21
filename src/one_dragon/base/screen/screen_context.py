@@ -1,5 +1,6 @@
 # one_dragon/base/screen/screen_context.py
 import os
+from pathlib import Path
 from typing import Optional
 
 from one_dragon.base.screen.screen_area import ScreenArea
@@ -87,6 +88,26 @@ class ScreenContext:
     def current_app_id(self) -> str | None:
         """获取当前加载的应用ID"""
         return self._current_app_id
+
+    # ========== 第三方插件管理 ==========
+
+    def add_third_party_plugins(self, plugin_dirs: list[tuple[Path, str]]) -> None:
+        """
+        批量添加第三方插件目录
+
+        Args:
+            plugin_dirs: application_plugin_dirs 返回的列表
+        """
+        self.loader.add_third_party_plugins(plugin_dirs)
+        # 如果当前有加载的应用，需要重新加载
+        if self._current_app_id is not None:
+            self.reload(from_memory=False, app_id=self._current_app_id)
+
+    def clear_third_party_plugins(self) -> None:
+        """清空所有第三方插件"""
+        self.loader.clear_third_party_plugins()
+        if self._current_app_id is not None:
+            self.reload(from_memory=False, app_id=self._current_app_id)
 
     # ========== 配置加载 ==========
 
@@ -403,7 +424,7 @@ class ScreenContext:
 
     def save_screen(self, screen_info: ScreenInfo, app_id: str | None = None) -> None:
         """
-        保存画面
+        保存画面到内置目录
 
         Args:
             screen_info: 要保存的画面信息
@@ -417,7 +438,7 @@ class ScreenContext:
             else:
                 target_app_id = '_global'
 
-        # 保存到文件
+        # 保存到文件（只保存到内置目录，不保存到第三方插件）
         save_app_id = target_app_id if target_app_id != '_global' else None
         self.loader.save_screen(screen_info, app_id=save_app_id)
 
@@ -430,7 +451,7 @@ class ScreenContext:
 
     def delete_screen(self, screen_id: str, app_id: str | None = None) -> None:
         """
-        删除一个画面
+        删除一个画面（只删除内置目录中的画面）
 
         Args:
             screen_id: 画面ID
@@ -442,7 +463,7 @@ class ScreenContext:
         screen_info = self._id_2_screen[screen_id]
         actual_app_id = app_id or getattr(screen_info, '_loaded_app_id', None)
 
-        # 从文件删除
+        # 从文件删除（只删除内置目录）
         delete_app_id = actual_app_id if actual_app_id != '_global' else None
         self.loader.delete_screen(screen_info, app_id=delete_app_id)
 
@@ -451,3 +472,7 @@ class ScreenContext:
 
         # 重新加载到运行时
         self.reload(from_memory=True, app_id=self._current_app_id)
+
+    def is_third_party_app(self, app_id: str) -> bool:
+        """判断应用是否为第三方插件提供的"""
+        return self.loader.is_third_party_app(app_id)
