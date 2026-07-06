@@ -67,8 +67,8 @@ class PluginImportService:
     处理第三方插件的导入、解压、验证和删除。
     """
 
-    def __init__(self, ctx: OneDragonContext):
-        self.ctx = ctx
+    def __init__(self, ctx: OneDragonContext) -> None:
+        self.ctx: OneDragonContext = ctx
 
     @property
     def plugins_dir(self) -> Path:
@@ -108,6 +108,7 @@ class PluginImportService:
         """导入单个插件
 
         从 zip 文件解压插件到 plugins 目录。
+        覆盖安装时先解压到临时目录，成功后原子替换旧目录。
 
         Args:
             zip_path: zip 文件路径
@@ -139,7 +140,7 @@ class PluginImportService:
                 if not validation.success:
                     return validation
 
-                # 获取插件目录名
+                # 获取插件目录名（已经过安全净化）
                 plugin_dir_name = self._get_plugin_dir_name(zf)
                 if not plugin_dir_name:
                     return ImportResult(
@@ -150,12 +151,23 @@ class PluginImportService:
 
                 target_dir = self.plugins_dir / plugin_dir_name
 
+                # 安全检查：确保 target_dir 在 plugins 目录下
+                plugins_dir_resolved = self.plugins_dir.resolve(strict=False)
+                target_dir_resolved = target_dir.resolve(strict=False)
+                if not target_dir_resolved.is_relative_to(plugins_dir_resolved):
+                    return ImportResult(
+                        success=False,
+                        plugin_name=plugin_dir_name,
+                        message=f"非法的插件目录: {plugin_dir_name}"
+                    )
+
                 # 检查目录是否已存在
                 if target_dir.exists():
                     if overwrite:
-                        # 覆盖安装：先删除旧目录
-                        shutil.rmtree(target_dir)
-                        log.info(f"覆盖安装: 已删除旧插件目录 {plugin_dir_name}")
+                        # 先解压到临时目录，成功后原子替换
+                        return self._atomic_extract_plugin(
+                            zf, target_dir, plugin_dir_name
+                        )
                     else:
                         return ImportResult(
                             success=False,
@@ -164,7 +176,7 @@ class PluginImportService:
                             plugin_dir=target_dir
                         )
 
-                # 解压文件
+                # 新安装：直接解压
                 self._extract_plugin(zf, target_dir, plugin_dir_name)
 
                 log.info(f"插件导入成功: {plugin_dir_name}")
@@ -272,11 +284,13 @@ class PluginImportService:
     def _get_plugin_dir_name(self, zf: zipfile.ZipFile) -> str | None:
         """从 zip 文件获取插件目录名
 
+        安全净化返回的目录名，拒绝路径穿越（如 .. 或绝对路径）。
+
         Args:
             zf: ZipFile 对象
 
         Returns:
-            str | None: 插件目录名
+            str | None: 安全的插件目录名
         """
         file_list = zf.namelist()
 
@@ -285,12 +299,44 @@ class PluginImportService:
             if name.endswith('_factory.py'):
                 parts = name.split('/')
                 if len(parts) >= 2:
-                    # 如果 factory 文件在子目录中，使用父目录名
-                    return parts[0]
-                # 如果 factory 直接在根目录，使用文件名（去掉 _factory.py）
-                return name.replace('_factory.py', '')
+                    # 如果 factory 文件在子目录中，使用顶层目录名
+                    candidate = parts[0]
+                else:
+                    # 如果 factory 直接在根目录，使用文件名（去掉 _factory.py）
+                    candidate = name.replace('_factory.py', '')
+
+                # 安全检查：净化候选目录名
+                return self._sanitize_dir_name(candidate)
 
         return None
+
+    def _sanitize_dir_name(self, name: str) -> str | None:
+        """净化目录名，拒绝路径穿越
+
+        拒绝包含 .. 、空字符串和以 / 开头的绝对路径。
+        只接受安全简单的目录名。
+
+        Args:
+            name: 候选目录名
+
+        Returns:
+            str | None: 安全的目录名，如果非法则返回 None
+        """
+        # 去除首尾空白
+        name = name.strip()
+        if not name:
+            return None
+
+        # 拒绝路径穿越和绝对路径
+        if name.startswith('/') or name.startswith('\\'):
+            return None
+        if '..' in name:
+            return None
+        # 拒绝包含路径分隔符的多级路径（如 a/b/c）
+        if '/' in name or '\\' in name:
+            return None
+
+        return name
 
     def _extract_plugin(
         self,
@@ -300,9 +346,11 @@ class PluginImportService:
     ) -> None:
         """解压插件到目标目录
 
+        对每个 ZIP 条目做路径安全检查，防止路径穿越。
+
         Args:
             zf: ZipFile 对象
-            target_dir: 目标目录
+            target_dir: 目标目录（必须在 plugins_dir 下）
             plugin_dir_name: 插件目录名
         """
         # 确保 plugins 目录存在
@@ -319,21 +367,148 @@ class PluginImportService:
         )
 
         if has_root_dir:
-            # 直接解压，zip 内部已经有目录结构
-            zf.extractall(self.plugins_dir)
+            # ZIP 内部有顶层目录结构，直接提取到 plugins 目录
+            # 逐文件安全提取（避免 extractall 的路径穿越风险）
+            for member in file_list:
+                # 跳过目录条目
+                if member.endswith('/'):
+                    continue
+                self._safe_extract_member(zf, member, self.plugins_dir)
         else:
-            # 需要创建目录并解压到其中
+            # 文件直接在 ZIP 根目录，需要创建插件目录并解压到其中
             target_dir.mkdir(parents=True, exist_ok=True)
             for member in file_list:
                 if member.endswith('/'):
                     # 创建目录
-                    (target_dir / member).mkdir(parents=True, exist_ok=True)
+                    safe_subdir = self._sanitize_member_path(member)
+                    if safe_subdir is not None:
+                        (target_dir / safe_subdir).mkdir(parents=True, exist_ok=True)
                 else:
-                    # 解压文件
-                    source = zf.read(member)
-                    dest_path = target_dir / member
-                    dest_path.parent.mkdir(parents=True, exist_ok=True)
-                    dest_path.write_bytes(source)
+                    self._safe_extract_member(zf, member, target_dir)
+
+    def _safe_extract_member(
+        self,
+        zf: zipfile.ZipFile,
+        member: str,
+        base_dir: Path
+    ) -> None:
+        """安全地提取单个 ZIP 条目
+
+        验证目标路径在 base_dir 内，防止路径穿越。
+
+        Args:
+            zf: ZipFile 对象
+            member: ZIP 条目名
+            base_dir: 基准目录
+        """
+        # 净化和验证路径
+        safe_path = self._sanitize_member_path(member)
+        if safe_path is None:
+            log.warning(f"跳过非法路径: {member}")
+            return
+
+        dest_path = base_dir / safe_path
+
+        # 双重检查：确保解析后的路径在 plugins 目录下
+        plugins_dir_resolved = self.plugins_dir.resolve(strict=False)
+        dest_resolved = dest_path.resolve(strict=False)
+        if not dest_resolved.is_relative_to(plugins_dir_resolved):
+            log.warning(f"跳过 plugins 目录外的路径: {member}")
+            return
+
+        # 写入文件
+        source = zf.read(member)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(source)
+
+    def _sanitize_member_path(self, member: str) -> str | None:
+        """净化 ZIP 条目路径
+
+        去除开头的 plugin_dir_name/ 前缀（has_root_dir 模式下），
+        并拒绝包含 .. 或绝对路径的条目。
+
+        Args:
+            member: ZIP 条目名
+
+        Returns:
+            str | None: 安全的相对路径，如果非法则返回 None
+        """
+        # 去除末尾斜杠（目录条目）
+        member = member.rstrip('/')
+
+        # 按 / 拆分段
+        segments = member.split('/')
+
+        # 净化每个段
+        safe_segments = []
+        for seg in segments:
+            if seg == '' or seg == '..':
+                # 拒绝空段和路径穿越
+                return None
+            if '\\' in seg:
+                # 拒绝反斜杠（Windows 路径穿越）
+                return None
+            safe_segments.append(seg)
+
+        if not safe_segments:
+            return None
+
+        return '/'.join(safe_segments)
+
+    def _atomic_extract_plugin(
+        self,
+        zf: zipfile.ZipFile,
+        target_dir: Path,
+        plugin_dir_name: str
+    ) -> ImportResult:
+        """原子覆盖安装：先解压到临时目录，成功后替换旧目录
+
+        避免覆盖安装时先删旧目录再解压导致旧版本数据丢失的问题。
+
+        Args:
+            zf: ZipFile 对象
+            target_dir: 最终目标目录
+            plugin_dir_name: 插件目录名
+
+        Returns:
+            ImportResult: 导入结果
+        """
+        tmp_dir = target_dir.with_name(plugin_dir_name + '.tmp')
+
+        # 清理可能残留的临时目录
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+
+        try:
+            # 先解压到临时目录
+            self._extract_plugin(zf, tmp_dir, plugin_dir_name)
+
+            # 验证临时目录内容有效（包含 factory 文件）
+            if not any(tmp_dir.glob('*_factory.py')):
+                shutil.rmtree(tmp_dir)
+                return ImportResult(
+                    success=False,
+                    plugin_name=plugin_dir_name,
+                    message="覆盖安装失败：临时目录缺少 *_factory.py 文件"
+                )
+
+            # 解压成功，交换目录
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+            tmp_dir.rename(target_dir)
+
+            log.info(f"覆盖安装成功: {plugin_dir_name}")
+            return ImportResult(
+                success=True,
+                plugin_name=plugin_dir_name,
+                message="覆盖安装成功",
+                plugin_dir=target_dir
+            )
+        except Exception:
+            # 失败时清理临时目录
+            if tmp_dir.exists():
+                shutil.rmtree(tmp_dir)
+            raise
 
     def import_directory(self, dir_path: str | Path, overwrite: bool = False) -> ImportResult:
         """导入目录格式的插件
@@ -375,11 +550,23 @@ class PluginImportService:
         plugin_name = dir_path.name
         target_dir = self.plugins_dir / plugin_name
 
+        # 安全检查：确保 target_dir 在 plugins 目录下
+        plugins_dir_resolved = self.plugins_dir.resolve(strict=False)
+        target_dir_resolved = target_dir.resolve(strict=False)
+        if not target_dir_resolved.is_relative_to(plugins_dir_resolved):
+            return ImportResult(
+                success=False,
+                plugin_name=plugin_name,
+                message=f"非法的插件目录: {plugin_name}"
+            )
+
         # 检查目录是否已存在
         if target_dir.exists():
             if overwrite:
-                shutil.rmtree(target_dir)
-                log.info(f"覆盖安装: 已删除旧插件目录 {plugin_name}")
+                # 原子覆盖：先复制到临时目录，成功后替换
+                return self._atomic_copy_plugin(
+                    dir_path, target_dir, plugin_name
+                )
             else:
                 return ImportResult(
                     success=False,
@@ -408,6 +595,61 @@ class PluginImportService:
                 plugin_name=plugin_name,
                 message=f"导入失败: {e}"
             )
+
+    def _atomic_copy_plugin(
+        self,
+        src_dir: Path,
+        target_dir: Path,
+        plugin_name: str
+    ) -> ImportResult:
+        """原子覆盖复制：先复制到临时目录，成功后替换旧目录
+
+        避免覆盖安装时先删旧目录再复制导致旧版本数据丢失的问题。
+
+        Args:
+            src_dir: 源目录路径
+            target_dir: 最终目标目录
+            plugin_name: 插件名称
+
+        Returns:
+            ImportResult: 导入结果
+        """
+        tmp_dir = target_dir.with_name(plugin_name + '.tmp')
+
+        # 清理可能残留的临时目录
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+
+        try:
+            # 先复制到临时目录
+            shutil.copytree(src_dir, tmp_dir)
+
+            # 验证临时目录内容有效（包含 factory 文件）
+            if not any(tmp_dir.glob('*_factory.py')):
+                shutil.rmtree(tmp_dir)
+                return ImportResult(
+                    success=False,
+                    plugin_name=plugin_name,
+                    message="覆盖安装失败：临时目录缺少 *_factory.py 文件"
+                )
+
+            # 复制成功，交换目录
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+            tmp_dir.rename(target_dir)
+
+            log.info(f"覆盖安装成功: {plugin_name}")
+            return ImportResult(
+                success=True,
+                plugin_name=plugin_name,
+                message="覆盖安装成功",
+                plugin_dir=target_dir
+            )
+        except Exception:
+            # 失败时清理临时目录
+            if tmp_dir.exists():
+                shutil.rmtree(tmp_dir)
+            raise
 
     def preview_directory(self, dir_path: str | Path) -> PluginPreviewInfo | None:
         """预览目录中的插件信息
@@ -460,17 +702,30 @@ class PluginImportService:
                 plugin_dir = self.plugins_dir / plugin_dir
 
         plugin_dir = Path(plugin_dir)
-        plugin_name = plugin_dir.name
 
-        if not plugin_dir.exists():
+        # 先 resolve 再做安全检查，防止 ../ 绕过
+        plugin_dir_resolved = plugin_dir.resolve(strict=False)
+        plugins_dir_resolved = self.plugins_dir.resolve(strict=False)
+
+        plugin_name = plugin_dir_resolved.name
+
+        if not plugin_dir_resolved.exists():
             return ImportResult(
                 success=False,
                 plugin_name=plugin_name,
                 message=f"插件目录不存在: {plugin_name}"
             )
 
-        # 安全检查：确保删除的是 plugins 目录下的内容
-        if self.plugins_dir not in plugin_dir.parents and plugin_dir != self.plugins_dir:
+        # 安全检查：禁止删除 plugins 根目录本身
+        if plugin_dir_resolved == plugins_dir_resolved:
+            return ImportResult(
+                success=False,
+                plugin_name=plugin_name,
+                message="不能删除 plugins 根目录"
+            )
+
+        # 安全检查：确保要删除的目录在 plugins 目录内
+        if not plugin_dir_resolved.is_relative_to(plugins_dir_resolved):
             return ImportResult(
                 success=False,
                 plugin_name=plugin_name,
@@ -478,7 +733,7 @@ class PluginImportService:
             )
 
         try:
-            shutil.rmtree(plugin_dir)
+            shutil.rmtree(plugin_dir_resolved)
             log.info(f"插件已删除: {plugin_name}")
             return ImportResult(
                 success=True,

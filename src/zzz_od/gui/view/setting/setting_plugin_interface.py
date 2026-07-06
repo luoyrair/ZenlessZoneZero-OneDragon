@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import webbrowser
+from collections.abc import Callable
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFileDialog, QWidget
@@ -38,10 +39,10 @@ class PluginCard(MultiPushSettingCard):
     def __init__(
         self,
         plugin_info: PluginInfo,
-        on_delete: callable,
-        on_open_homepage: callable,
-        parent=None
-    ):
+        on_delete: Callable[[PluginInfo], None],
+        on_open_homepage: Callable[[PluginInfo], None],
+        parent: QWidget | None = None,
+    ) -> None:
         self.plugin_info = plugin_info
         self.on_delete_callback = on_delete
         self.on_open_homepage_callback = on_open_homepage
@@ -49,11 +50,11 @@ class PluginCard(MultiPushSettingCard):
         # 创建按钮
         buttons = []
 
-        # 主页按钮（如果有链接）
-        if plugin_info.homepage:
-            self.homepage_btn = PushButton(text=gt("主页"))
-            self.homepage_btn.clicked.connect(self._on_homepage_clicked)
-            buttons.append(self.homepage_btn)
+        # 主页按钮（始终创建，通过可见性控制显示）
+        self.homepage_btn = PushButton(text=gt("主页"))
+        self.homepage_btn.clicked.connect(self._on_homepage_clicked)
+        self.homepage_btn.setVisible(bool(plugin_info.homepage))
+        buttons.append(self.homepage_btn)
 
         # 删除按钮
         self.delete_btn = ToolButton(FluentIcon.DELETE, parent=None)
@@ -111,14 +112,13 @@ class PluginCard(MultiPushSettingCard):
         self.contentLabel.setText(content)
 
         # 更新主页按钮可见性
-        if hasattr(self, 'homepage_btn'):
-            self.homepage_btn.setVisible(bool(plugin_info.homepage))
+        self.homepage_btn.setVisible(bool(plugin_info.homepage))
 
 
 class SettingPluginInterface(VerticalScrollInterface):
     """插件管理界面"""
 
-    def __init__(self, ctx: ZContext, parent=None):
+    def __init__(self, ctx: ZContext, parent: QWidget | None = None) -> None:
         self.ctx: ZContext = ctx
         self.plugin_import_service = PluginImportService(ctx)
         self._plugin_cards: list[PluginCard] = []
@@ -319,9 +319,11 @@ class SettingPluginInterface(VerticalScrollInterface):
 
         # 如果有已存在的插件，询问是否覆盖
         if existing_plugins:
-            # 获取已安装插件的版本信息
+            # 获取已安装插件的版本信息（以 plugin_dir.name 为键，与 ImportResult.plugin_name 匹配）
             installed_plugins = {
-                p.app_id: p for p in self.ctx.factory_manager.third_party_plugins
+                p.plugin_dir.name: p
+                for p in self.ctx.factory_manager.third_party_plugins
+                if p.plugin_dir is not None
             }
 
             # 检查版本信息
@@ -329,7 +331,7 @@ class SettingPluginInterface(VerticalScrollInterface):
             for fp, r in existing_plugins:
                 preview = self.plugin_import_service.preview_plugin(fp)
                 new_ver = preview.version if preview else None
-                old_ver = installed_plugins.get(r.plugin_name, None)
+                old_ver = installed_plugins.get(r.plugin_name)
                 old_ver_str = old_ver.version if old_ver else None
 
                 is_downgrade = self._is_version_lower(new_ver, old_ver_str)
@@ -474,9 +476,13 @@ class SettingPluginInterface(VerticalScrollInterface):
             )
         elif result.plugin_dir is not None:
             # 插件已存在，询问是否覆盖
-            # 获取已安装版本
+            # 获取已安装版本（以 plugin_dir.name 与 ImportResult.plugin_name 匹配）
             installed = next(
-                (p for p in self.ctx.factory_manager.third_party_plugins if p.app_id == result.plugin_name),
+                (
+                    p
+                    for p in self.ctx.factory_manager.third_party_plugins
+                    if p.plugin_dir is not None and p.plugin_dir.name == result.plugin_name
+                ),
                 None
             )
             old_ver = installed.version if installed else None
