@@ -164,6 +164,15 @@ class EnterGame(ZOperation):
             if result.is_success:
                 return self.round_wait(result.status, wait=1)
 
+        # 账号确认态: 有历史账号下拉触发器时, 走历史账号下拉切换, 避免输入账号密码触发图形验证码
+        if self.ctx.game_account_config.intl_account_name.strip():
+            result = self.round_by_find_area(screen, '打开游戏', '账号下拉-点击展开')
+            if result.is_success:
+                return self.round_success('国际服-账号确认', wait=1)
+            result = self.round_by_find_area(screen, '打开游戏', '账号下拉-点击收起')
+            if result.is_success:
+                return self.round_success('国际服-账号确认', wait=1)
+
         # 未登录时会直接弹出登录窗口
         result = self.round_by_find_area(screen, '打开游戏', '国际服-密码输入区域')
         if result.is_success:
@@ -313,6 +322,62 @@ class EnterGame(ZOperation):
         return self.round_by_find_and_click_area(screen, '打开游戏', 'B服-登录',
                                                  success_wait=5, retry_wait=1)
 
+    @node_from(from_name='画面识别', status='国际服-账号确认')
+    @operation_node(name='国际服-历史账号下拉切换', node_max_retry_times=10)
+    def switch_intl_account_by_dropdown(self) -> OperationRoundResult:
+        """
+        通过登录界面的历史账号下拉菜单切换国际服账号, 避免输入账号密码触发图形验证码。
+
+        参考 B服 switch_bilibili_account 的下拉切换逻辑: 点开历史账号列表 → OCR 匹配目标账号 → 点击 → 进入游戏。
+        """
+        name = self.ctx.game_account_config.intl_account_name.strip()
+        if not name:
+            return self.round_fail('未配置国际服历史账号名, 无法切换已登录的国际服账号')
+
+        # 收起态(▽)才点展开; 已是展开态(△)跳过
+        collapsed = self.round_by_find_area(self.last_screenshot, '打开游戏', '账号下拉-点击展开')
+        if collapsed.is_success:
+            expand_result = self.round_by_find_and_click_area(
+                self.last_screenshot, '打开游戏', '账号下拉-点击展开', success_wait=0.8
+            )
+            if not expand_result.is_success:
+                return expand_result
+
+        # 从历史账号列表区域 OCR 匹配目标账号(列表账号为掩码显示, 配置需与游戏内显示一致)
+        area = self.ctx.screen_loader.get_area('打开游戏', '国际服-历史账号列表')
+        part = cv2_utils.crop_image_only(self.last_screenshot, area.rect)
+        mask = cv2.inRange(part,
+                           np.array([220, 220, 220], dtype=np.uint8),
+                           np.array([255, 255, 255], dtype=np.uint8))
+        to_ocr = cv2.bitwise_and(part, part, mask=cv2_utils.dilate(mask, 5))
+
+        ocr_result_map = self.ctx.ocr.run_ocr(to_ocr)
+        find = False
+        for ocr_result, mrl in ocr_result_map.items():
+            if name and str_utils.find_by_lcs(name, ocr_result, percent=0.7):
+                find = True
+                self.ctx.controller.click(mrl.max.center + area.left_top)
+                break
+        if not find:
+            masked = (name[:1] + '*' * max(len(name) - 2, 1) + name[-1:]) if len(name) >= 2 else '*'
+            return self.round_retry(f"未找到已登录的国际服账号: {masked}")
+
+        time.sleep(1)  # 等待选中账号后下拉收起
+        screen_after_select = self.screenshot()
+        # 若下拉仍展开(△), 点收起露出"进入游戏"按钮; 游戏自动收起时跳过
+        expanded = self.round_by_find_area(screen_after_select, '打开游戏', '账号下拉-点击收起')
+        if expanded.is_success:
+            collapse_result = self.round_by_find_and_click_area(
+                screen_after_select, '打开游戏', '账号下拉-点击收起', success_wait=0.8
+            )
+            if not collapse_result.is_success:
+                return collapse_result
+
+        screen = self.screenshot()
+        self.already_login = True
+        return self.round_by_find_and_click_area(screen, '打开游戏', '账号确认-进入游戏',
+                                                 success_wait=5, retry_wait=1)
+
     @node_from(from_name='画面识别', status='国际服-密码输入区域')
     @operation_node(name='国际服-输入账号密码')
     def input_account_password_intl(self) -> OperationRoundResult:
@@ -342,6 +407,7 @@ class EnterGame(ZOperation):
                                                  success_wait=1)
 
     @node_from(from_name='国际服-输入账号密码', status='国际服-账号密码进入游戏')
+    @node_from(from_name='国际服-历史账号下拉切换', status='账号确认-进入游戏')
     @operation_node(name='国际服-换服')
     def check_server(self) -> OperationRoundResult:
         self.round_by_click_area('打开游戏', '国际服-换服', success_wait=1)

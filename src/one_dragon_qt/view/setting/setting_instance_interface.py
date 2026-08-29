@@ -275,6 +275,9 @@ class SettingInstanceInterface(VerticalScrollInterface):
         self.bilibili_account_name.init_with_adapter(
             self.ctx.game_account_config.get_prop_adapter("bilibili_account_name")
         )
+        self.intl_account_name.init_with_adapter(
+            self.ctx.game_account_config.get_prop_adapter("intl_account_name")
+        )
         self.force_login_opt.setValue(self.ctx.one_dragon_config.current_instance_force_login, emit_signal=False)
 
         self.set_ui_of_game_region(self.ctx.game_account_config.game_region)
@@ -363,6 +366,14 @@ class SettingInstanceInterface(VerticalScrollInterface):
         )
         instance_settings_group.addSettingCard(self.bilibili_account_name)
 
+        self.intl_account_name = TextSettingCard(
+            icon=FluentIcon.PEOPLE,
+            title="国际服历史账号名",
+            content="国际服为选择已有登录记录的历史账号进行登录（避免输入密码触发验证码），需要先手动登录游戏",
+            input_placeholder="填写游戏中历史账号下拉列表显示的账号名（掩码，如 32****65@qq.com）",
+        )
+        instance_settings_group.addSettingCard(self.intl_account_name)
+
         # self.input_way_opt = ComboBoxSettingCard(icon=FluentIcon.CLIPPING_TOOL, title='输入方式',
         #                                          options_enum=TypeInputWay)
         # instance_settings_group.addSettingCard(self.input_way_opt)
@@ -435,11 +446,14 @@ class SettingInstanceInterface(VerticalScrollInterface):
             self.game_password_opt.hide()
             self.help_bilibili_opt.show()
             self.bilibili_account_name.show()
+            self.intl_account_name.hide()
         else:
             self.game_account_opt.show()
             self.game_password_opt.show()
             self.help_bilibili_opt.hide()
             self.bilibili_account_name.hide()
+            # 国际服(非国服/B服)显示历史账号名, 用于下拉切换避免输入密码触发验证码
+            self.intl_account_name.setVisible(value != GameRegionEnum.CN.value.value)
 
     def on_game_region_opt_changed(self, _, value):
         self.set_ui_of_game_region(value)
